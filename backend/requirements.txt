@@ -1,0 +1,35 @@
+# Web framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+
+# Database
+sqlalchemy>=2.0.0
+psycopg[binary]>=3.1.0
+alembic>=1.13.0
+pgvector>=0.3.0
+
+# Config
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+
+# Auth
+passlib[bcrypt]>=1.7.4
+PyJWT>=2.8.0
+
+# Queue (Phase 2)
+celery>=5.3.0
+redis>=5.0.0
+
+# PDF parsing (Phase 2)
+PyMuPDF>=1.24.0
+
+# OpenAI (Phase 2+)
+openai>=1.30.0
+
+# Observability (Phase 3)
+langfuse>=2.0.0
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+httpx>=0.27.0
