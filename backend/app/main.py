@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.auth.routes import router as auth_router
 from app.documents.routes import router as documents_router
+from app.retrieval.routes import router as retrieval_router
 
 app = FastAPI(
     title="ClearanceRAG",
@@ -26,6 +27,7 @@ app.add_middleware(
 # Register routers
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(documents_router, prefix="/documents", tags=["documents"])
+app.include_router(retrieval_router, prefix="/retrieval", tags=["retrieval"])
 
 
 @app.get("/health")
