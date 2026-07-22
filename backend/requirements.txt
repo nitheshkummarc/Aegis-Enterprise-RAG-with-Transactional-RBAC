@@ -1,6 +1,7 @@
 # Web framework
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
 
 # Database
 sqlalchemy>=2.0.0
@@ -13,8 +14,9 @@ pydantic-settings>=2.0.0
 python-dotenv>=1.0.0
 
 # Auth
-passlib[bcrypt]>=1.7.4
+bcrypt>=4.0.0
 PyJWT>=2.8.0
+email-validator>=2.0.0
 
 # Queue (Phase 2)
 celery>=5.3.0
