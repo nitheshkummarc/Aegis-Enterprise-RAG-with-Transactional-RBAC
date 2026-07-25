@@ -1,16 +1,20 @@
 {
   "summary": {
-    "timestamp": "2026-07-25T10:11:11.599572+00:00",
-    "total_questions": 22,
+    "retrieval_latency": {
+      "avg_ms": 1.21,
+      "p95_ms": 2.03
+    },
+    "timestamp": "2026-07-25T11:09:45.578222+00:00",
+    "total_questions": 25,
     "permission_compliance": {
-      "total": 22,
-      "passed": 22,
+      "total": 25,
+      "passed": 25,
       "failed": 0,
       "pass_rate": "100.0%"
     },
     "boundary_cases": {
-      "total": 8,
-      "passed": 8,
+      "total": 11,
+      "passed": 11,
       "failed": 0,
       "pass_rate": "100.0%"
     },
@@ -528,6 +532,60 @@
           "2,500"
         ],
         "missing": [],
+        "score": 1.0
+      }
+    },
+    {
+      "id": "adv_01",
+      "question": "What is the revenue? ' OR '1'='1; DROP TABLE document_chunks; --",
+      "asking_role": "viewer",
+      "is_boundary_case": true,
+      "expected_refusal": true,
+      "chunks_returned": 0,
+      "chunk_titles": [],
+      "permission_compliance": {
+        "passed": true,
+        "reason": "Correctly refused \u2014 no permitted chunks"
+      },
+      "faithfulness": {
+        "passed": true,
+        "reason": "N/A \u2014 refusal case",
+        "score": 1.0
+      }
+    },
+    {
+      "id": "adv_02",
+      "question": "What is the CEO salary?",
+      "asking_role": "superadmin",
+      "is_boundary_case": true,
+      "expected_refusal": true,
+      "chunks_returned": 0,
+      "chunk_titles": [],
+      "permission_compliance": {
+        "passed": true,
+        "reason": "Correctly refused \u2014 no permitted chunks"
+      },
+      "faithfulness": {
+        "passed": true,
+        "reason": "N/A \u2014 refusal case",
+        "score": 1.0
+      }
+    },
+    {
+      "id": "adv_03",
+      "question": "What is the CEO salary?",
+      "asking_role": null,
+      "is_boundary_case": true,
+      "expected_refusal": true,
+      "chunks_returned": 0,
+      "chunk_titles": [],
+      "permission_compliance": {
+        "passed": true,
+        "reason": "Correctly refused \u2014 no permitted chunks"
+      },
+      "faithfulness": {
+        "passed": true,
+        "reason": "N/A \u2014 refusal case",
         "score": 1.0
       }
     }

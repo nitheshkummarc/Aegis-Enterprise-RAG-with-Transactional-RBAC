@@ -1,15 +1,19 @@
 # ClearanceRAG — Evaluation Results
 
-**Generated**: 2026-07-25T10:11:11.599572+00:00
+**Generated**: 2026-07-25T11:09:45.578222+00:00
 
 ## Summary
 
 | Metric | Value |
 |---|---|
-| Total Questions | 22 |
-| Permission Compliance | 100.0% (22/22) |
-| Boundary Cases | 100.0% (8/8) |
+| Total Questions | 25 |
+| Permission Compliance | 100.0% (25/25) |
+| Boundary Cases | 100.0% (11/11) |
 | Avg Faithfulness Score | 1.00 |
+| Avg Retrieval Latency | 1.21ms |
+| p95 Retrieval Latency | 2.03ms |
+
+**Performance Metric:** Avg Retrieval Latency: 1.21ms \| p95 Retrieval Latency: 2.03ms
 
 ## Permission Compliance Results
 
@@ -37,6 +41,9 @@
 | q20 | manager | 🔒 Yes | 0 | ✅ PASS | Correctly refused — no permitted chunks |
 | q21 | admin | No | 1 | ✅ PASS | Returned 1 permitted chunks |
 | q22 | admin | No | 3 | ✅ PASS | Returned 3 permitted chunks |
+| adv_01 | viewer | 🔒 Yes | 0 | ✅ PASS | Correctly refused — no permitted chunks |
+| adv_02 | superadmin | 🔒 Yes | 0 | ✅ PASS | Correctly refused — no permitted chunks |
+| adv_03 | None | 🔒 Yes | 0 | ✅ PASS | Correctly refused — no permitted chunks |
 
 ## Faithfulness Results
 
@@ -64,6 +71,9 @@
 | q20 | manager | N/A | — | — |
 | q21 | admin | 1.0 | 82% | — |
 | q22 | admin | 1.0 | 2012, 2,500 | — |
+| adv_01 | viewer | N/A | — | — |
+| adv_02 | superadmin | N/A | — | — |
+| adv_03 | None | N/A | — | — |
 
 ---
 

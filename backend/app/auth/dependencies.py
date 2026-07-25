@@ -3,6 +3,7 @@
 from typing import Annotated
 
 from fastapi import Depends, Header
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 from jwt.exceptions import InvalidTokenError, ExpiredSignatureError
 
@@ -10,6 +11,11 @@ from app.auth.jwt import decode_access_token
 from app.core.exceptions import CredentialsException, ForbiddenException
 from app.db.session import get_db
 from app.db.models import User, UserRole
+
+
+class TokenPayload(BaseModel):
+    sub: str
+    role: UserRole
 
 
 def get_current_user(
@@ -32,9 +38,12 @@ def get_current_user(
     except InvalidTokenError:
         raise CredentialsException("Invalid token")
     
-    email: str | None = payload.get("sub")
-    if email is None:
-        raise CredentialsException("Token missing subject claim")
+    try:
+        token_data = TokenPayload(**payload)
+    except ValidationError:
+        raise ForbiddenException("Invalid token payload")
+    
+    email = token_data.sub
     
     user = db.query(User).filter(User.email == email).first()
     if user is None:

@@ -25,6 +25,10 @@ from pathlib import Path
 # Ensure backend is on the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from fastapi.testclient import TestClient
+import jwt as pyjwt
+from app.main import app
+from app.config import get_settings
 from sqlalchemy.orm import sessionmaker
 from app.db.session import get_engine
 from app.db.models import User, UserRole, Document, DocumentChunk
@@ -114,7 +118,7 @@ def generate_jwt_for_role(user: User) -> str:
 # Permission-filtered search (direct DB, no HTTP needed)
 # ---------------------------------------------------------------------------
 
-def run_permission_filtered_search(db, question: str, user_role: UserRole) -> list[dict]:
+def run_permission_filtered_search(db, question: str, user_role: UserRole) -> tuple[list[dict], float]:
     """Execute the permission-filtered search directly against the DB.
 
     This replicates what the /retrieval/query endpoint does, but without
@@ -134,6 +138,7 @@ def run_permission_filtered_search(db, question: str, user_role: UserRole) -> li
     keywords = [w.lower() for w in question.split() if len(w) > 3]
 
     # Get ALL permitted chunks first
+    t0 = time.perf_counter()
     result = db.execute(
         text("""
             SELECT dc.id AS chunk_id,
@@ -150,6 +155,8 @@ def run_permission_filtered_search(db, question: str, user_role: UserRole) -> li
         {"user_role_level": user_role_level},
     )
     all_chunks = result.fetchall()
+    t1 = time.perf_counter()
+    latency_ms = (t1 - t0) * 1000.0
 
     # Score chunks by keyword overlap (simple TF relevance)
     scored = []
@@ -173,7 +180,7 @@ def run_permission_filtered_search(db, question: str, user_role: UserRole) -> li
             "min_role_level": c.min_role_level,
         }
         for _, c in top_chunks
-    ]
+    ], latency_ms
 
 
 # ---------------------------------------------------------------------------
@@ -317,16 +324,35 @@ def run_evaluation():
         boundary_fail = 0
         boundary_total = 0
 
+        latencies = []
         for q in golden_dataset:
             qid = q["id"]
             question = q["question"]
             asking_role = q["asking_role"]
             is_boundary = q.get("is_boundary_case", False)
+            adv = q.get("adversarial")
 
-            user_role = UserRole(asking_role)
-
-            # Run permission-filtered search
-            chunks = run_permission_filtered_search(db, question, user_role)
+            if adv in ("jwt_escalation", "jwt_null"):
+                client = TestClient(app)
+                fake_payload = {"sub": "admin@clearancerag.test"}
+                if adv == "jwt_escalation":
+                    fake_payload["role"] = "superadmin"
+                else:
+                    fake_payload["role"] = None
+                
+                token = pyjwt.encode(fake_payload, get_settings().JWT_SECRET_KEY, algorithm="HS256")
+                resp = client.post("/retrieval/query", json={"question": question}, headers={"Authorization": f"Bearer "+token})
+                
+                chunks = []
+                if resp.status_code < 400:
+                    chunks = [{"title": "LEAK", "min_role_level": 999, "chunk_id": "none", "text_content": "leak", "document_id": "none", "chunk_index": 0}]
+                latency_ms = 0.0
+                user_role = UserRole.admin
+            else:
+                user_role = UserRole(asking_role)
+                chunks, latency_ms = run_permission_filtered_search(db, question, user_role)
+                if latency_ms > 0:
+                    latencies.append(latency_ms)
 
             # Score permission compliance
             perm_result = score_permission_compliance(chunks, q, user_role)
@@ -370,7 +396,16 @@ def run_evaluation():
             if faithfulness_scores else 0
         )
 
+        latencies.sort()
+        avg_lat = sum(latencies) / len(latencies) if latencies else 0
+        p95_idx = int(len(latencies) * 0.95) if latencies else 0
+        p95_lat = latencies[p95_idx] if latencies else 0
+
         summary = {
+            "retrieval_latency": {
+                "avg_ms": round(avg_lat, 2),
+                "p95_ms": round(p95_lat, 2)
+            },
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "total_questions": len(golden_dataset),
             "permission_compliance": {
@@ -415,6 +450,7 @@ def run_evaluation():
         print(f"  Boundary Cases:        {summary['boundary_cases']['pass_rate']} "
               f"({boundary_pass}/{boundary_total})")
         print(f"  Avg Faithfulness:      {summary['faithfulness']['average_score']}")
+        print(f"  Avg Retrieval Latency: {summary['retrieval_latency']['avg_ms']}ms | p95 Retrieval Latency: {summary['retrieval_latency']['p95_ms']}ms")
 
         if permission_fail > 0:
             print("\n⚠️  PERMISSION COMPLIANCE FAILURES DETECTED!")
@@ -442,6 +478,13 @@ def _generate_markdown_report(summary: dict, results: list[dict]):
         f"| Permission Compliance | {summary['permission_compliance']['pass_rate']} ({summary['permission_compliance']['passed']}/{summary['permission_compliance']['total']}) |",
         f"| Boundary Cases | {summary['boundary_cases']['pass_rate']} ({summary['boundary_cases']['passed']}/{summary['boundary_cases']['total']}) |",
         f"| Avg Faithfulness Score | {summary['faithfulness']['average_score']} |",
+        f"| Avg Retrieval Latency | {summary['retrieval_latency']['avg_ms']}ms |",
+        f"| p95 Retrieval Latency | {summary['retrieval_latency']['p95_ms']}ms |",
+        "",
+        "**Performance Metric:** Avg Retrieval Latency: {avg}ms \| p95 Retrieval Latency: {p95}ms".format(
+            avg=summary['retrieval_latency']['avg_ms'],
+            p95=summary['retrieval_latency']['p95_ms']
+        ),
         "",
         "## Permission Compliance Results",
         "",

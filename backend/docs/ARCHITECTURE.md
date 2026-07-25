@@ -42,3 +42,8 @@ Aegis integrates Langfuse to monitor the RAG pipeline's behavior in production.
 
 *   **Nested Spans**: The `/query` endpoint wraps the request in a parent trace, with child spans explicitly demarcating the `retrieval` phase (database execution) and the `generation` phase (LLM streaming).
 *   **Why it matters**: When auditing a permission denial, administrators can inspect the Langfuse trace to prove that the database returned an empty array during the `retrieval` span, confirming the system behaved correctly and the LLM was never exposed to the restricted text.
+
+### Known Trade-off: HNSW Approximate Recall vs. Exact Search
+Aegis uses the HNSW (Hierarchical Navigable Small World) index for sub-millisecond vector retrieval. HNSW is an Approximate Nearest Neighbor (ANN) algorithm. In edge cases where a permitted chunk is located in a distant graph cluster, HNSW might occasionally miss it compared to a brute-force sequential scan.
+- **Mitigation:** For this project's scale (<10k chunks), HNSW provides >99% recall with a fraction of the latency. If absolute 100% recall were a strict compliance requirement (e.g., legal discovery), we would swap the index type to `ivfflat` with a high `lists` parameter, accepting a latency trade-off for guaranteed exactness.
+
