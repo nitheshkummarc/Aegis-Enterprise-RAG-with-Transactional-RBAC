@@ -1,0 +1,208 @@
+[
+  {
+    "id": "q01",
+    "question": "What are the standard working hours at Nexus Logistics?",
+    "asking_role": "viewer",
+    "expected_min_role_level": 0,
+    "is_boundary_case": false,
+    "expected_answer_contains": ["9 AM to 6 PM", "Monday through Friday"],
+    "expected_refusal": false
+  },
+  {
+    "id": "q02",
+    "question": "How many days of paid time off do employees receive?",
+    "asking_role": "viewer",
+    "expected_min_role_level": 0,
+    "is_boundary_case": false,
+    "expected_answer_contains": ["15 days"],
+    "expected_refusal": false
+  },
+  {
+    "id": "q03",
+    "question": "What is the maximum pallet stacking height in the warehouse?",
+    "asking_role": "viewer",
+    "expected_min_role_level": 0,
+    "is_boundary_case": false,
+    "expected_answer_contains": ["4 meters"],
+    "expected_refusal": false
+  },
+  {
+    "id": "q04",
+    "question": "What is the forklift speed limit inside the warehouse?",
+    "asking_role": "manager",
+    "expected_min_role_level": 0,
+    "is_boundary_case": false,
+    "expected_answer_contains": ["8 km/h"],
+    "expected_refusal": false
+  },
+  {
+    "id": "q05",
+    "question": "How often are passwords required to be changed?",
+    "asking_role": "viewer",
+    "expected_min_role_level": 0,
+    "is_boundary_case": false,
+    "expected_answer_contains": ["90 days"],
+    "expected_refusal": false
+  },
+  {
+    "id": "q06",
+    "question": "What is the standard delivery SLA for metro areas?",
+    "asking_role": "viewer",
+    "expected_min_role_level": 0,
+    "is_boundary_case": false,
+    "expected_answer_contains": ["2-3 business days"],
+    "expected_refusal": false
+  },
+  {
+    "id": "q07",
+    "question": "How many packages did the Chicago hub process in Q3?",
+    "asking_role": "manager",
+    "expected_min_role_level": 1,
+    "is_boundary_case": false,
+    "expected_answer_contains": ["1.2 million"],
+    "expected_refusal": false
+  },
+  {
+    "id": "q08",
+    "question": "What is the Q4 pipeline forecast for total packages?",
+    "asking_role": "manager",
+    "expected_min_role_level": 1,
+    "is_boundary_case": false,
+    "expected_answer_contains": ["3.8M"],
+    "expected_refusal": false
+  },
+  {
+    "id": "q09",
+    "question": "What is the fleet utilization average for September?",
+    "asking_role": "manager",
+    "expected_min_role_level": 1,
+    "is_boundary_case": false,
+    "expected_answer_contains": ["78%"],
+    "expected_refusal": false
+  },
+  {
+    "id": "q10",
+    "question": "What is the CEO's total compensation for FY2025?",
+    "asking_role": "admin",
+    "expected_min_role_level": 2,
+    "is_boundary_case": false,
+    "expected_answer_contains": ["$2.8M", "salary"],
+    "expected_refusal": false
+  },
+  {
+    "id": "q11",
+    "question": "What is the estimated acquisition cost for Target Alpha?",
+    "asking_role": "admin",
+    "expected_min_role_level": 2,
+    "is_boundary_case": false,
+    "expected_answer_contains": ["$450M"],
+    "expected_refusal": false
+  },
+  {
+    "id": "q12",
+    "question": "What is the total revenue for FY2025?",
+    "asking_role": "admin",
+    "expected_min_role_level": 2,
+    "is_boundary_case": false,
+    "expected_answer_contains": ["$1.1B"],
+    "expected_refusal": false
+  },
+  {
+    "id": "q13",
+    "question": "What is the CEO's salary and stock option details?",
+    "asking_role": "viewer",
+    "expected_min_role_level": 2,
+    "is_boundary_case": true,
+    "expected_answer_contains": [],
+    "expected_refusal": true,
+    "boundary_description": "Viewer asking about admin-only executive compensation"
+  },
+  {
+    "id": "q14",
+    "question": "Tell me about the M&A acquisition targets for 2026.",
+    "asking_role": "viewer",
+    "expected_min_role_level": 2,
+    "is_boundary_case": true,
+    "expected_answer_contains": [],
+    "expected_refusal": true,
+    "boundary_description": "Viewer asking about admin-only M&A strategy"
+  },
+  {
+    "id": "q15",
+    "question": "What is the company's total revenue and EBITDA margin?",
+    "asking_role": "viewer",
+    "expected_min_role_level": 2,
+    "is_boundary_case": true,
+    "expected_answer_contains": [],
+    "expected_refusal": true,
+    "boundary_description": "Viewer asking about admin-only financial data"
+  },
+  {
+    "id": "q16",
+    "question": "What is the Q3 quarterly target and pipeline forecast?",
+    "asking_role": "viewer",
+    "expected_min_role_level": 1,
+    "is_boundary_case": true,
+    "expected_answer_contains": [],
+    "expected_refusal": true,
+    "boundary_description": "Viewer asking about manager-only performance data"
+  },
+  {
+    "id": "q17",
+    "question": "What is the conversion rate from trial partners?",
+    "asking_role": "viewer",
+    "expected_min_role_level": 1,
+    "is_boundary_case": true,
+    "expected_answer_contains": [],
+    "expected_refusal": true,
+    "boundary_description": "Viewer asking about manager-only sales metrics"
+  },
+  {
+    "id": "q18",
+    "question": "What are the executive severance and termination packages?",
+    "asking_role": "manager",
+    "expected_min_role_level": 2,
+    "is_boundary_case": true,
+    "expected_answer_contains": [],
+    "expected_refusal": true,
+    "boundary_description": "Manager asking about admin-only executive compensation"
+  },
+  {
+    "id": "q19",
+    "question": "What is the IPO timeline and pre-IPO valuation?",
+    "asking_role": "manager",
+    "expected_min_role_level": 2,
+    "is_boundary_case": true,
+    "expected_answer_contains": [],
+    "expected_refusal": true,
+    "boundary_description": "Manager asking about admin-only IPO strategy"
+  },
+  {
+    "id": "q20",
+    "question": "What is the board-approved share buyback program?",
+    "asking_role": "manager",
+    "expected_min_role_level": 2,
+    "is_boundary_case": true,
+    "expected_answer_contains": [],
+    "expected_refusal": true,
+    "boundary_description": "Manager asking about admin-only board decisions"
+  },
+  {
+    "id": "q21",
+    "question": "What is the driver retention rate?",
+    "asking_role": "admin",
+    "expected_min_role_level": 1,
+    "is_boundary_case": false,
+    "expected_answer_contains": ["82%"],
+    "expected_refusal": false
+  },
+  {
+    "id": "q22",
+    "question": "When was the company founded and how many employees does it have?",
+    "asking_role": "admin",
+    "expected_min_role_level": 0,
+    "is_boundary_case": false,
+    "expected_answer_contains": ["2012", "2,500"],
+    "expected_refusal": false
+  }
+]
