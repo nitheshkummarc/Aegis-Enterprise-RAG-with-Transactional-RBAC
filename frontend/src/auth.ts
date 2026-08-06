@@ -23,10 +23,10 @@ export const authOptions: NextAuthConfig = {
 
         const res = await fetch("http://127.0.0.1:8000/auth/login", {
           method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({
-            username: credentials.email as string,
-            password: credentials.password as string,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: credentials.email,
+            password: credentials.password,
           }),
         });
 
@@ -34,12 +34,11 @@ export const authOptions: NextAuthConfig = {
         
         const data = await res.json();
         
-        // Return a mock user object with the token embedded
-        // The JWT is stored inside NextAuth's encrypted session cookie
+        // The backend returns { access_token, role, token_type }
         return {
-          id: data.user.id,
-          email: data.user.email,
-          role: data.user.role,
+          id: credentials.email as string, // Backend doesn't return ID, use email
+          email: credentials.email as string,
+          role: data.role,
           accessToken: data.access_token,
         };
       },

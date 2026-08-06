@@ -17,7 +17,7 @@ import openai
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user
@@ -34,6 +34,7 @@ router = APIRouter()
 
 
 class QueryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     question: str
 
 

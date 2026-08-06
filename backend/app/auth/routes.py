@@ -1,11 +1,12 @@
 """Authentication routes: /register and /login."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, EmailStr
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.auth.jwt import create_access_token
 from app.core.security import hash_password, verify_password
+from app.core.limiter import limiter
 from app.db.session import get_db
 from app.db.models import User, UserRole
 
@@ -15,17 +16,20 @@ router = APIRouter()
 # ---- Request / Response Schemas ----
 
 class RegisterRequest(BaseModel):
-    email: EmailStr
+    model_config = ConfigDict(extra="forbid")
+    email: str
     password: str
     role: UserRole = UserRole.viewer
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    model_config = ConfigDict(extra="forbid")
+    email: str
     password: str
 
 
 class TokenResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     access_token: str
     token_type: str = "bearer"
     role: str
@@ -34,7 +38,8 @@ class TokenResponse(BaseModel):
 # ---- Routes ----
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-def register(body: RegisterRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def register(request: Request, body: RegisterRequest, db: Session = Depends(get_db)):
     """Register a new user with hashed password."""
     # Check for existing user
     existing = db.query(User).filter(User.email == body.email).first()
@@ -58,7 +63,8 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=TokenResponse)
-def login(body: LoginRequest, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
     """Authenticate a user and return a JWT."""
     user = db.query(User).filter(User.email == body.email).first()
     if not user or not verify_password(body.password, user.password_hash):

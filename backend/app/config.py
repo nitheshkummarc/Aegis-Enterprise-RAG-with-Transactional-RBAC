@@ -1,6 +1,7 @@
 """Application configuration loaded from environment variables via pydantic-settings."""
 
 from pydantic_settings import BaseSettings
+from pydantic import model_validator
 from functools import lru_cache
 
 
@@ -9,6 +10,8 @@ class Settings(BaseSettings):
     
     All variable names match the .env.example exactly.
     """
+    ENVIRONMENT: str = "development"
+
     # Database
     DATABASE_URL: str = "postgresql+psycopg://clearancerag:clearancerag@localhost:5432/clearancerag"
     
@@ -36,6 +39,16 @@ class Settings(BaseSettings):
     LANGFUSE_HOST: str = "https://cloud.langfuse.com"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+    @model_validator(mode="after")
+    def validate_jwt_secret_length(self) -> 'Settings':
+        if self.ENVIRONMENT == "production":
+            if len(self.JWT_SECRET_KEY) < 32:
+                raise ValueError(
+                    "JWT_SECRET_KEY must be at least 32 characters in production to prevent "
+                    "brute-force attacks against the HMAC-SHA256 signature."
+                )
+        return self
 
 
 @lru_cache()

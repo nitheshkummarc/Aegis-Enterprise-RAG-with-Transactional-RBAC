@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, FormEvent, useRef, useEffect } from "react";
-import { useSession } from "next-auth/react";
+import { useSession, signOut } from "next-auth/react";
 import { fetchWithAuth } from "@/lib/api";
 import SourcesDropdown, { Source } from "@/components/SourcesDropdown";
 import { Send, Bot, User, Loader2, Shield } from "lucide-react";
@@ -124,32 +124,38 @@ export default function ChatPage() {
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-4rem)] max-w-4xl mx-auto bg-gray-50 rounded-lg shadow-sm border border-gray-200 mt-6 overflow-hidden">
+    <div className="flex flex-col h-[calc(100vh-4rem)] max-w-4xl mx-auto bg-neutral-950 rounded-lg shadow-sm border border-neutral-800 mt-6 overflow-hidden">
       {/* Header */}
-      <div className="bg-white p-4 border-b border-gray-200 flex justify-between items-center">
-        <h2 className="text-lg font-semibold text-gray-800">ClearanceRAG Terminal</h2>
-        <div className="text-sm text-gray-500 flex items-center">
+      <div className="bg-neutral-900 p-4 border-b border-neutral-800 flex justify-between items-center">
+        <h2 className="text-lg font-semibold text-neutral-100">Aegis Terminal</h2>
+        <div className="text-sm text-neutral-400 flex items-center">
           <Shield className="w-4 h-4 mr-1" />
-          Clearance Level: <span className="font-bold text-gray-700 ml-1 uppercase">{session?.user?.role || "unknown"}</span>
+          Clearance Level: <span className="font-bold text-neutral-200 ml-1 uppercase">{session?.user?.role || "unknown"}</span>
+          <button 
+            onClick={() => signOut()} 
+            className="ml-4 px-3 py-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 text-neutral-300 rounded text-xs transition-colors"
+          >
+            Sign Out
+          </button>
         </div>
       </div>
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
         {messages.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-gray-400">
-            <Bot className="w-12 h-12 mb-2 text-gray-300" />
+          <div className="h-full flex flex-col items-center justify-center text-neutral-500">
+            <Bot className="w-12 h-12 mb-2 text-neutral-700" />
             <p>Ask a question based on your clearance level.</p>
           </div>
         ) : (
           messages.map((msg) => (
             <div key={msg.id} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
               <div className={`flex max-w-[80%] ${msg.role === "user" ? "flex-row-reverse" : "flex-row"}`}>
-                <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${msg.role === "user" ? "bg-blue-100 text-blue-600 ml-3" : "bg-gray-200 text-gray-600 mr-3"}`}>
+                <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${msg.role === "user" ? "bg-neutral-800 text-neutral-300 ml-3" : "bg-neutral-800 text-neutral-300 mr-3"}`}>
                   {msg.role === "user" ? <User className="w-5 h-5" /> : <Bot className="w-5 h-5" />}
                 </div>
                 <div>
-                  <div className={`p-4 rounded-lg ${msg.role === "user" ? "bg-blue-600 text-white" : "bg-white border border-gray-200 text-gray-800"}`}>
+                  <div className={`p-4 rounded-lg ${msg.role === "user" ? "bg-neutral-800 border border-neutral-700 text-neutral-100" : "bg-neutral-900 border border-neutral-800 text-neutral-200"}`}>
                     <p className="whitespace-pre-wrap">{msg.content || (msg.role === "assistant" && <span className="animate-pulse">Thinking...</span>)}</p>
                   </div>
                   {msg.role === "assistant" && msg.sources !== undefined && (
@@ -167,20 +173,20 @@ export default function ChatPage() {
       </div>
 
       {/* Input */}
-      <div className="bg-white p-4 border-t border-gray-200">
+      <div className="bg-neutral-900 p-4 border-t border-neutral-800">
         <form onSubmit={handleSubmit} className="flex relative">
           <input
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Type your query here..."
-            className="flex-1 border border-gray-300 rounded-full pl-6 pr-14 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+            className="flex-1 border border-neutral-700 bg-neutral-950 text-neutral-100 rounded-full pl-6 pr-14 py-3 focus:outline-none focus:ring-2 focus:ring-neutral-500 focus:border-transparent transition-all placeholder-neutral-500"
             disabled={isLoading}
           />
           <button
             type="submit"
             disabled={!input.trim() || isLoading}
-            className="absolute right-2 top-2 bottom-2 bg-blue-600 text-white rounded-full w-10 h-10 flex items-center justify-center hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            className="absolute right-2 top-2 bottom-2 bg-neutral-700 text-neutral-100 rounded-full w-10 h-10 flex items-center justify-center hover:bg-neutral-600 disabled:opacity-50 transition-colors"
           >
             {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
           </button>
