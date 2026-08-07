@@ -43,14 +43,14 @@ def _sse_event(data: dict) -> str:
 
 
 def _try_langfuse_trace(user: User, question: str):
-    """Attempt to create a Langfuse trace. Returns (trace, enabled) tuple.
+    """Attempt to create a Langfuse trace. Returns (langfuse_client, trace, enabled) tuple.
 
-    If Langfuse keys are not configured, returns (None, False) gracefully
+    If Langfuse keys are not configured, returns (None, None, False) gracefully
     so the query still works without observability.
     """
     settings = get_settings()
     if not settings.LANGFUSE_PUBLIC_KEY or not settings.LANGFUSE_SECRET_KEY:
-        return None, False
+        return None, None, False
 
     try:
         from langfuse import Langfuse
@@ -66,10 +66,10 @@ def _try_langfuse_trace(user: User, question: str):
             metadata={"role": user.role.value},
             input=question,
         )
-        return trace, True
+        return langfuse, trace, True
     except Exception as e:
         logger.warning("Langfuse initialization failed: %s", e)
-        return None, False
+        return None, None, False
 
 
 @router.post("/query")
@@ -83,7 +83,7 @@ async def query(
     question = body.question
 
     # Initialize Langfuse trace (graceful fallback if not configured)
-    trace, langfuse_enabled = _try_langfuse_trace(current_user, question)
+    langfuse_client, trace, langfuse_enabled = _try_langfuse_trace(current_user, question)
 
     # ------------------------------------------------------------------
     # Step 1: Embed the user's question
@@ -175,7 +175,7 @@ async def query(
                         "sources": sources,
                     })
         except Exception as e:
-            logger.error(f"Generation error: {e}")
+            logger.error("Generation error: %s", e)
             yield _sse_event({
                 "type": "done",
                 "sources": [],
@@ -190,19 +190,13 @@ async def query(
                 },
             )
 
-        # Flush Langfuse
-        if langfuse_enabled and trace:
+        # Flush Langfuse — reuse the client from _try_langfuse_trace
+        if langfuse_enabled and trace and langfuse_client:
             trace.update(output=full_response)
             try:
-                from langfuse import Langfuse
-                lf = Langfuse(
-                    public_key=settings.LANGFUSE_PUBLIC_KEY,
-                    secret_key=settings.LANGFUSE_SECRET_KEY,
-                    host=settings.LANGFUSE_HOST,
-                )
-                lf.flush()
-            except Exception:
-                pass
+                langfuse_client.flush()
+            except Exception as e:
+                logger.warning("Langfuse flush failed: %s", e)
 
     return StreamingResponse(
         event_stream(),

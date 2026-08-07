@@ -103,10 +103,10 @@ def _delete_from_storage(object_key: str) -> None:
 
         supabase = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)
         supabase.storage.from_("documents").remove([object_key])
-        logger.info(f"Deleted storage object: {object_key}")
+        logger.info("Deleted storage object: %s", object_key)
     except Exception as e:
         # Best-effort deletion — don't fail the task over this
-        logger.warning(f"Failed to delete storage object {object_key}: {e}")
+        logger.warning("Failed to delete storage object %s: %s", object_key, e)
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +150,7 @@ def ingest_document(self, document_id: str, object_key: str) -> dict:
     try:
         doc = db.query(Document).filter(Document.id == uuid.UUID(document_id)).first()
         if not doc:
-            logger.error(f"Document {document_id} not found in database")
+            logger.error("Document %s not found in database", document_id)
             return {"status": "error", "detail": "Document not found"}
 
         # ------------------------------------------------------------------
@@ -163,8 +163,9 @@ def ingest_document(self, document_id: str, object_key: str) -> dict:
 
         if existing_count and existing_count > 0:
             logger.info(
-                f"Document {document_id}: {existing_count} chunks already exist, "
-                f"skipping re-ingestion (idempotency check)"
+                "Document %s: %d chunks already exist, "
+                "skipping re-ingestion (idempotency check)",
+                document_id, existing_count,
             )
             # Ensure status is correct
             if doc.status != "ready":
@@ -185,7 +186,7 @@ def ingest_document(self, document_id: str, object_key: str) -> dict:
         try:
             _download_from_storage(object_key, temp_path)
         except Exception as e:
-            logger.error(f"Failed to download {object_key}: {e}")
+            logger.error("Failed to download %s: %s", object_key, e)
             doc.status = "failed"
             db.commit()
             return {"status": "failed", "detail": f"Storage download error: {e}"}
@@ -198,14 +199,14 @@ def ingest_document(self, document_id: str, object_key: str) -> dict:
             text = extract_text_from_pdf(temp_path)
         except (RuntimeError, Exception) as e:
             logger.error(
-                f"PDF extraction failed for document {document_id}: {e}"
+                "PDF extraction failed for document %s: %s", document_id, e
             )
             doc.status = "failed"
             db.commit()
             return {"status": "failed", "detail": f"PDF extraction error: {e}"}
 
         if not text.strip():
-            logger.warning(f"Document {document_id} produced no text content")
+            logger.warning("Document %s produced no text content", document_id)
             doc.status = "failed"
             db.commit()
             return {"status": "failed", "detail": "PDF produced no text content"}
@@ -215,7 +216,7 @@ def ingest_document(self, document_id: str, object_key: str) -> dict:
         # ------------------------------------------------------------------
         chunks = chunk_text(text, chunk_size=500, chunk_overlap=50)
         logger.info(
-            f"Document {document_id}: extracted {len(chunks)} chunks"
+            "Document %s: extracted %d chunks", document_id, len(chunks)
         )
 
         # ------------------------------------------------------------------
@@ -225,7 +226,7 @@ def ingest_document(self, document_id: str, object_key: str) -> dict:
             embeddings = _embed_with_retry(self, chunks)
         except Exception as e:
             logger.error(
-                f"Embedding failed for document {document_id} after retries: {e}"
+                "Embedding failed for document %s after retries: %s", document_id, e
             )
             doc.status = "failed"
             db.commit()
@@ -255,8 +256,8 @@ def ingest_document(self, document_id: str, object_key: str) -> dict:
         _delete_from_storage(object_key)
 
         logger.info(
-            f"Document {document_id}: ingestion complete — "
-            f"{len(chunks)} chunks stored with min_role_level={doc.min_role_level}"
+            "Document %s: ingestion complete — %d chunks stored with min_role_level=%d",
+            document_id, len(chunks), doc.min_role_level,
         )
         return {
             "status": "ready",
@@ -266,7 +267,7 @@ def ingest_document(self, document_id: str, object_key: str) -> dict:
 
     except Exception as e:
         db.rollback()
-        logger.exception(f"Unexpected error processing document {document_id}")
+        logger.exception("Unexpected error processing document %s", document_id)
         # Try to mark as failed (dead-letter)
         try:
             doc_retry = (
@@ -277,8 +278,8 @@ def ingest_document(self, document_id: str, object_key: str) -> dict:
             if doc_retry:
                 doc_retry.status = "failed"
                 db.commit()
-        except Exception:
-            pass
+        except Exception as inner_e:
+            logger.warning("Failed to mark document %s as failed: %s", document_id, inner_e)
         raise
     finally:
         # Always clean up the temp file — even on crash
@@ -308,8 +309,8 @@ def _embed_with_retry(task, chunks: list[str]) -> list[list[float]]:
             if attempt >= max_attempts:
                 raise
             logger.warning(
-                f"OpenAI rate limit hit (attempt {attempt}/{max_attempts}), "
-                f"retrying in {delay}s..."
+                "OpenAI rate limit hit (attempt %d/%d), retrying in %ds...",
+                attempt, max_attempts, delay,
             )
             import time
             time.sleep(delay)
