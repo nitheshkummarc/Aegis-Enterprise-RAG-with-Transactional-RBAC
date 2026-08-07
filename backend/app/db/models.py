@@ -16,7 +16,6 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     SmallInteger,
-    String,
     Text,
     CheckConstraint,
     UniqueConstraint,
@@ -85,6 +84,12 @@ class Document(Base):
         nullable=False,
         default="processing",
     )
+    # Supabase Storage object key: {user_id}/{document_id}/{uuid}.pdf
+    # User-controlled filename content never reaches this path.
+    object_key = Column(Text, nullable=True)
+    # Original filename stored as metadata only — never used to construct
+    # a storage path or object key.
+    original_filename = Column(Text, nullable=True)
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,

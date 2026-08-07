@@ -14,13 +14,26 @@ def chunk_text(
 
     Args:
         text: The text to split.
-        chunk_size: Target size for each chunk in characters.
-        chunk_overlap: Number of overlapping characters between consecutive chunks.
+        chunk_size: Target size for each chunk in characters. Must be > 0.
+        chunk_overlap: Number of overlapping characters between consecutive
+            chunks. Must be >= 0 and < chunk_size.
 
     Returns:
         A list of text chunks. Returns a single-element list if the text is
         shorter than chunk_size. Returns an empty list for empty input.
+
+    Raises:
+        ValueError: If chunk_size <= 0 or chunk_overlap >= chunk_size.
     """
+    if chunk_size <= 0:
+        raise ValueError(f"chunk_size must be > 0, got {chunk_size}")
+    if chunk_overlap < 0:
+        raise ValueError(f"chunk_overlap must be >= 0, got {chunk_overlap}")
+    if chunk_overlap >= chunk_size:
+        raise ValueError(
+            f"chunk_overlap ({chunk_overlap}) must be < chunk_size ({chunk_size})"
+        )
+
     if not text or not text.strip():
         return []
 
@@ -51,10 +64,15 @@ def chunk_text(
         chunks.append(text[start:actual_end])
 
         # Move start forward by chunk length minus overlap
-        start = actual_end - chunk_overlap
-        # Prevent infinite loop if overlap >= chunk
-        if start <= (actual_end - len(text[start:actual_end])):
-            start = actual_end
+        next_start = actual_end - chunk_overlap
+
+        # Guard against non-progress: if overlap pushed us backward or
+        # to the same position, force forward by at least 1 character
+        # to prevent an infinite loop.
+        if next_start <= start:
+            next_start = start + 1
+
+        start = next_start
 
     return chunks
 

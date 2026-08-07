@@ -20,15 +20,16 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# CORS: Allow the Next.js frontend on localhost:3000.
-# Added in Phase 1 per the Master Build Prompt to prevent silent
-# failures when the frontend calls the backend in Phase 4.
+# CORS: Origins are configurable via CORS_ORIGINS setting.
+# Defaults to localhost:3000 for development.
+from app.config import get_settings as _get_settings
+_cors_origins = _get_settings().CORS_ORIGINS.split(",") if _get_settings().CORS_ORIGINS else ["http://localhost:3000"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 # Register routers

@@ -33,20 +33,31 @@ class Settings(BaseSettings):
     # Backend
     BACKEND_URL: str = "http://localhost:8000"
     
+    # CORS (comma-separated origins, e.g. "http://localhost:3000,https://myapp.com")
+    CORS_ORIGINS: str = "http://localhost:3000"
+    
     # Langfuse
     LANGFUSE_PUBLIC_KEY: str = ""
     LANGFUSE_SECRET_KEY: str = ""
     LANGFUSE_HOST: str = "https://cloud.langfuse.com"
+    
+    # Supabase
+    SUPABASE_URL: str = ""
+    SUPABASE_SERVICE_KEY: str = ""
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     @model_validator(mode="after")
-    def validate_jwt_secret_length(self) -> 'Settings':
+    def validate_production_secrets(self) -> 'Settings':
         if self.ENVIRONMENT == "production":
             if len(self.JWT_SECRET_KEY) < 32:
                 raise ValueError(
                     "JWT_SECRET_KEY must be at least 32 characters in production to prevent "
                     "brute-force attacks against the HMAC-SHA256 signature."
+                )
+            if not self.OPENAI_API_KEY:
+                raise ValueError(
+                    "OPENAI_API_KEY must be set in production."
                 )
         return self
 

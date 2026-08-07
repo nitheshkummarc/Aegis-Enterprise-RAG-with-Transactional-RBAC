@@ -16,5 +16,15 @@ Question: {question}"""
 
 
 def build_prompt(context: str, question: str) -> str:
-    """Build the final prompt with context and question injected."""
-    return SYSTEM_PROMPT_TEMPLATE.format(context=context, question=question)
+    """Build the final prompt with context and question injected.
+
+    Uses Template-style substitution to avoid Python format-string injection.
+    If user input contains '{context}' or '{question}', str.format() would
+    raise KeyError or leak variable names. Manual replacement is immune to this.
+    """
+    # Do NOT use SYSTEM_PROMPT_TEMPLATE.format() — user-controlled content
+    # in `question` or `context` could contain {braces} that .format()
+    # would try to resolve, causing KeyError or information leakage.
+    result = SYSTEM_PROMPT_TEMPLATE.replace("{context}", context)
+    result = result.replace("{question}", question)
+    return result

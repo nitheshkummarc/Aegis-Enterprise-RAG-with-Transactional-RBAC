@@ -11,13 +11,12 @@ only from this final event.
 
 import json
 import logging
-from typing import Any
 
 import openai
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user
@@ -35,7 +34,7 @@ router = APIRouter()
 
 class QueryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    question: str
+    question: str = Field(max_length=2000)
 
 
 def _sse_event(data: dict) -> str:
@@ -69,7 +68,7 @@ def _try_langfuse_trace(user: User, question: str):
         )
         return trace, True
     except Exception as e:
-        logger.warning(f"Langfuse initialization failed: {e}")
+        logger.warning("Langfuse initialization failed: %s", e)
         return None, False
 
 
@@ -89,12 +88,19 @@ async def query(
     # ------------------------------------------------------------------
     # Step 1: Embed the user's question
     # ------------------------------------------------------------------
-    client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
-    embed_response = client.embeddings.create(
-        model="text-embedding-3-small",
-        input=question,
-    )
-    query_embedding = embed_response.data[0].embedding
+    try:
+        client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+        embed_response = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=question,
+        )
+        query_embedding = embed_response.data[0].embedding
+    except openai.APIError as e:
+        logger.error("OpenAI embedding failed: %s", e)
+        raise HTTPException(
+            status_code=502,
+            detail="Failed to generate query embedding. Please try again.",
+        )
 
     # ------------------------------------------------------------------
     # Step 2: Permission-filtered retrieval
