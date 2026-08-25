@@ -267,6 +267,7 @@ def seed_synthetic_corpus() -> dict:
     from app.db.models import User, UserRole, Document, DocumentChunk
     from app.core.security import hash_password
     from app.ingestion.chunker import chunk_text
+    from app.ingestion.embedder import embed_texts
 
     engine = get_engine()
     SessionLocal = sessionmaker(bind=engine)
@@ -311,18 +312,20 @@ def seed_synthetic_corpus() -> dict:
             # Chunk the content
             chunks = chunk_text(doc_data["content"], chunk_size=500, chunk_overlap=50)
 
-            # Create fake embeddings (1536-dim zero vectors)
-            # In production, these would be real OpenAI embeddings.
-            # For eval, the cosine similarity doesn't matter — we test
-            # the permission filter path, not retrieval quality.
-            fake_embedding = [0.01] * 1536
+            # Real embeddings via the same path production ingestion uses.
+            # Uniform placeholder vectors would make cosine similarity
+            # identical across every chunk, so a query embedding couldn't
+            # actually retrieve the relevant chunk — fine for exercising
+            # the permission filter alone, but not for an eval that also
+            # scores retrieval/generation faithfulness end-to-end.
+            embeddings = embed_texts(chunks)
 
-            for i, chunk_content in enumerate(chunks):
+            for i, (chunk_content, embedding) in enumerate(zip(chunks, embeddings)):
                 chunk = DocumentChunk(
                     document_id=doc.id,
                     chunk_index=i,
                     text_content=chunk_content,
-                    embedding=fake_embedding,
+                    embedding=embedding,
                     min_role_level=doc.min_role_level,
                 )
                 db.add(chunk)

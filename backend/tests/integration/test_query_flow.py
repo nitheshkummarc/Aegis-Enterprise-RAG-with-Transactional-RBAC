@@ -271,6 +271,55 @@ class TestQueryEndpoint:
         assert done_event["type"] == "done"
         assert done_event["sources"] == []
 
+    @patch("app.retrieval.routes.openai")
+    @patch("app.retrieval.routes.generate_streaming")
+    @patch("app.retrieval.routes.permission_filtered_search")
+    def test_generation_failure_emits_error_and_keeps_real_sources(
+        self, mock_search, mock_generate, mock_openai, query_client, query_db
+    ):
+        """A mid-stream generation exception emits an "error" event, and
+        the trailing done event still carries the permitted sources."""
+        mock_embed_response = MagicMock()
+        mock_embed_response.data = [MagicMock(embedding=[0.1] * 1536)]
+        mock_openai.OpenAI.return_value.embeddings.create.return_value = (
+            mock_embed_response
+        )
+
+        mock_search.return_value = [
+            {
+                "chunk_id": "chunk-1",
+                "text_content": "PTO is 15 days.",
+                "document_id": "doc-1",
+                "chunk_index": 0,
+                "title": "Public Policy",
+                "distance": 0.1,
+            }
+        ]
+
+        def failing_generate(prompt):
+            yield {"type": "token", "text": "PTO is "}
+            raise RuntimeError("OpenAI connection reset mid-stream")
+
+        mock_generate.side_effect = failing_generate
+
+        token = create_access_token({"sub": "viewer@query.test", "role": "viewer"})
+        response = query_client.post(
+            "/retrieval/query",
+            json={"question": "What is the PTO policy?"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+        events = _parse_sse_events(response.text)
+        event_types = [e["type"] for e in events]
+
+        assert "error" in event_types, event_types
+        assert event_types[-1] == "done"
+
+        done_event = events[-1]
+        assert done_event["sources"] != []
+        assert done_event["sources"][0]["document_id"] == "doc-1"
+
     def test_query_without_auth_returns_422(self, query_client):
         """Query without auth header returns 422."""
         response = query_client.post(
@@ -278,3 +327,44 @@ class TestQueryEndpoint:
             json={"question": "Any question"},
         )
         assert response.status_code == 422
+
+
+class TestQueryRateLimit:
+    """POST /retrieval/query is rate-limited, same as auth and upload-url."""
+
+    @patch("app.retrieval.routes.openai")
+    @patch("app.retrieval.routes.generate_streaming")
+    @patch("app.retrieval.routes.permission_filtered_search")
+    def test_query_returns_429_after_20_requests_per_minute(
+        self, mock_search, mock_generate, mock_openai, query_client, query_db
+    ):
+        mock_embed_response = MagicMock()
+        mock_embed_response.data = [MagicMock(embedding=[0.1] * 1536)]
+        mock_openai.OpenAI.return_value.embeddings.create.return_value = (
+            mock_embed_response
+        )
+        mock_search.return_value = []
+
+        def fake_generate(prompt):
+            yield {
+                "type": "done",
+                "full_response": "",
+                "usage": {},
+                "model": "gpt-4o-mini",
+            }
+
+        mock_generate.side_effect = fake_generate
+
+        token = create_access_token({"sub": "viewer@query.test", "role": "viewer"})
+        headers = {"Authorization": f"Bearer {token}"}
+
+        statuses = [
+            query_client.post(
+                "/retrieval/query",
+                json={"question": "Any question"},
+                headers=headers,
+            ).status_code
+            for _ in range(21)
+        ]
+        assert statuses[:20] == [200] * 20, statuses
+        assert statuses[20] == 429, statuses

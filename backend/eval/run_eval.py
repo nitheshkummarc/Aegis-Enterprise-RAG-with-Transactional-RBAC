@@ -13,6 +13,16 @@ This script:
 
 CRITICAL: This uses the SAME JWT secret and creation logic as the backend.
           The JWTs are real and valid — not mocked.
+
+Every question is run against the real pipeline:
+  - permission_filtered_search runs the real SQL against real pgvector,
+    using a real OpenAI query embedding (this is what retrieval_latency
+    measures — DB time only, embedding excluded from the timer)
+  - /retrieval/query is called end-to-end through the real FastAPI app
+    (real embedding, real SQL, real gpt-4o-mini generation), and scoring
+    is done against the LLM's actual generated text — including checking
+    that boundary/refusal cases produce the exact required refusal string,
+    not just that the SQL filter withheld chunks.
 """
 
 import json
@@ -27,14 +37,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from fastapi.testclient import TestClient
 import jwt as pyjwt
+import openai
 from app.main import app
 from app.config import get_settings
 from sqlalchemy.orm import sessionmaker
 from app.db.session import get_engine
 from app.db.models import User, UserRole, Document, DocumentChunk
 from app.auth.jwt import create_access_token  # THE backend's JWT logic
-from app.retrieval.search import get_role_level, PERMISSION_FILTERED_SEARCH_SQL
-from app.retrieval.prompt import build_prompt
+from app.retrieval.search import get_role_level, permission_filtered_search
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -115,98 +125,92 @@ def generate_jwt_for_role(user: User) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Permission-filtered search (direct DB, no HTTP needed)
+# Real retrieval + real generation
 # ---------------------------------------------------------------------------
 
-def run_permission_filtered_search(db, question: str, user_role: UserRole) -> tuple[list[dict], float]:
-    """Execute the permission-filtered search directly against the DB.
-
-    This replicates what the /retrieval/query endpoint does, but without
-    needing OpenAI embeddings or a running server. We use a simplified
-    text-match approach for eval since the synthetic corpus has known content.
-
-    For the permission compliance test, what matters is whether chunks
-    with min_role_level > user_role_level are returned. The vector similarity
-    is orthogonal to RBAC.
-    """
-    from sqlalchemy import text
-
-    user_role_level = get_role_level(user_role)
-
-    # Search by text content relevance (simple LIKE matching for eval)
-    # Split question into keywords and search for matches
-    keywords = [w.lower() for w in question.split() if len(w) > 3]
-
-    # Get ALL permitted chunks first
-    t0 = time.perf_counter()
-    result = db.execute(
-        text("""
-            SELECT dc.id AS chunk_id,
-                   dc.text_content,
-                   dc.document_id,
-                   dc.chunk_index,
-                   dc.min_role_level,
-                   d.title
-            FROM document_chunks dc
-            JOIN documents d ON d.id = dc.document_id
-            WHERE dc.min_role_level <= :user_role_level
-            ORDER BY dc.created_at
-        """),
-        {"user_role_level": user_role_level},
+def embed_question(openai_client: "openai.OpenAI", question: str) -> list[float]:
+    response = openai_client.embeddings.create(
+        model="text-embedding-3-small",
+        input=question,
     )
-    all_chunks = result.fetchall()
-    t1 = time.perf_counter()
-    latency_ms = (t1 - t0) * 1000.0
+    return response.data[0].embedding
 
-    # Score chunks by keyword overlap (simple TF relevance)
-    scored = []
-    for chunk in all_chunks:
-        content_lower = chunk.text_content.lower()
-        score = sum(1 for kw in keywords if kw in content_lower)
-        if score > 0:
-            scored.append((score, chunk))
 
-    # Return top 3 by score
-    scored.sort(key=lambda x: x[0], reverse=True)
-    top_chunks = scored[:3]
+def run_real_permission_search(
+    db, query_embedding: list[float], user_role: UserRole
+) -> tuple[list[dict], float]:
+    """Run the real permission_filtered_search — real SQL, real pgvector
+    <=> ordering, real role filter. Only the SQL execution is timed; the
+    embedding call happens outside this function so the latency metric
+    measures DB retrieval time, matching what the README reports."""
+    t0 = time.perf_counter()
+    chunks = permission_filtered_search(
+        db=db, query_embedding=query_embedding, user_role=user_role, limit=3
+    )
+    latency_ms = (time.perf_counter() - t0) * 1000.0
+    return chunks, latency_ms
 
-    return [
-        {
-            "chunk_id": str(c.chunk_id),
-            "text_content": c.text_content,
-            "document_id": str(c.document_id),
-            "chunk_index": c.chunk_index,
-            "title": c.title,
-            "min_role_level": c.min_role_level,
-        }
-        for _, c in top_chunks
-    ], latency_ms
+
+def _parse_sse(response_text: str) -> dict:
+    """Parse the /retrieval/query SSE stream into the full generated text,
+    the final sources list, and whether a generation "error" event fired."""
+    full_response = ""
+    sources: list[dict] = []
+    had_error_event = False
+
+    for line in response_text.strip().split("\n"):
+        line = line.strip()
+        if not line.startswith("data: "):
+            continue
+        data_str = line[len("data: "):].strip()
+        if not data_str:
+            continue
+        try:
+            event = json.loads(data_str)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") == "token":
+            full_response += event.get("text", "")
+        elif event.get("type") == "error":
+            had_error_event = True
+        elif event.get("type") == "done":
+            sources = event.get("sources", [])
+
+    return {
+        "full_response": full_response,
+        "sources": sources,
+        "had_error_event": had_error_event,
+    }
+
+
+def run_real_query_endpoint(client: TestClient, token: str, question: str) -> dict:
+    """Call the real /retrieval/query endpoint end-to-end: real embedding,
+    real SQL search, real gpt-4o-mini generation, real SSE stream."""
+    resp = client.post(
+        "/retrieval/query",
+        json={"question": question},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    result = {
+        "status_code": resp.status_code,
+        "full_response": "",
+        "sources": [],
+        "had_error_event": False,
+    }
+    if resp.status_code >= 400:
+        return result
+    result.update(_parse_sse(resp.text))
+    return result
 
 
 # ---------------------------------------------------------------------------
 # Scoring
 # ---------------------------------------------------------------------------
 
-def score_permission_compliance(
-    chunks: list[dict],
-    question_data: dict,
-    user_role: UserRole,
-) -> dict:
-    """Score whether the permission filter correctly enforced access control.
-
-    For boundary cases (expected_refusal=True):
-        PASS if sources is empty (no chunks returned)
-        FAIL if any chunks are returned (permission leak!)
-
-    For non-boundary cases (expected_refusal=False):
-        PASS if at least one chunk is returned
-        FAIL if no chunks returned (over-restriction)
-    """
-    user_role_level = get_role_level(user_role)
-    is_boundary = question_data.get("is_boundary_case", False)
-    expected_refusal = question_data.get("expected_refusal", False)
-
-    # Check for permission leaks: any chunk with min_role_level > user_role_level
+def score_permission_compliance(chunks: list[dict], user_role_level: int) -> dict:
+    """Score whether the SQL permission filter leaked anything above the
+    asking user's role level. `chunks` come straight from
+    permission_filtered_search, so min_role_level is the real DB value."""
     leaked_chunks = [c for c in chunks if c["min_role_level"] > user_role_level]
 
     if leaked_chunks:
@@ -219,60 +223,42 @@ def score_permission_compliance(
             "severity": "CRITICAL",
         }
 
-    if expected_refusal:
-        # Boundary case: expect NO chunks
-        if len(chunks) == 0:
-            return {"passed": True, "reason": "Correctly refused — no permitted chunks"}
-        else:
-            # Chunks were returned, but they are within the user's level.
-            # This is NOT a permission leak — the user CAN see these chunks.
-            # The question just happens to ask about higher-tier content
-            # but the search returned lower-tier content that matched keywords.
-            # We mark this as a "soft pass" — the SQL filter is correct,
-            # but the LLM should still refuse based on context.
-            return {
-                "passed": True,
-                "reason": (
-                    f"SQL filter correct — {len(chunks)} permitted chunks returned "
-                    f"(all within role level {user_role_level}). "
-                    f"LLM should refuse based on context mismatch."
-                ),
-                "note": "sql_filter_correct_llm_should_refuse",
-            }
-    else:
-        # Non-boundary case: expect chunks
-        if len(chunks) > 0:
-            return {"passed": True, "reason": f"Returned {len(chunks)} permitted chunks"}
-        else:
-            return {
-                "passed": False,
-                "reason": "No chunks returned for a non-boundary query",
-                "severity": "WARNING",
-            }
+    return {
+        "passed": True,
+        "reason": f"No leaked chunks ({len(chunks)} permitted chunks returned)",
+    }
 
 
-def score_faithfulness(chunks: list[dict], question_data: dict) -> dict:
-    """Score whether the retrieved chunks contain the expected answer content.
-
-    Checks if expected_answer_contains keywords appear in the chunk text.
-    Only applicable for non-refusal cases.
-    """
+def score_faithfulness(full_response: str, question_data: dict) -> dict:
+    """Score the LLM's actual generated answer — not the retrieved chunk
+    text. For boundary/refusal cases, this checks the model produced the
+    exact required refusal string, not just that the SQL filter withheld
+    chunks; a chunk-only check can't tell "correctly refused" apart from
+    "the LLM ignored the instruction and answered anyway"."""
     if question_data.get("expected_refusal", False):
-        return {"passed": True, "reason": "N/A — refusal case", "score": 1.0}
+        passed = REFUSAL_STRING in full_response
+        return {
+            "passed": passed,
+            "reason": (
+                "LLM emitted the required refusal string"
+                if passed
+                else "LLM did NOT refuse — required refusal string missing from its answer"
+            ),
+            "score": 1.0 if passed else 0.0,
+        }
 
     expected = question_data.get("expected_answer_contains", [])
     if not expected:
         return {"passed": True, "reason": "No expected content specified", "score": 1.0}
 
-    all_text = " ".join(c["text_content"] for c in chunks).lower()
-    found = [kw for kw in expected if kw.lower() in all_text]
-    missing = [kw for kw in expected if kw.lower() not in all_text]
-
-    score = len(found) / len(expected) if expected else 1.0
+    text_lower = full_response.lower()
+    found = [kw for kw in expected if kw.lower() in text_lower]
+    missing = [kw for kw in expected if kw.lower() not in text_lower]
+    score = len(found) / len(expected)
 
     return {
         "passed": score >= 0.5,
-        "reason": f"Found {len(found)}/{len(expected)} expected keywords",
+        "reason": f"Found {len(found)}/{len(expected)} expected keywords in the generated answer",
         "found": found,
         "missing": missing,
         "score": score,
@@ -298,6 +284,9 @@ def run_evaluation():
     engine = get_engine()
     SessionLocal = sessionmaker(bind=engine)
     db = SessionLocal()
+    settings = get_settings()
+    openai_client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+    client = TestClient(app)
 
     try:
         # Pre-flight checks
@@ -314,7 +303,7 @@ def run_evaluation():
             print(f"  ✓ Generated JWT for {role_name} ({user.email})")
 
         # Run evaluations
-        print("\n[3/4] Running evaluations...")
+        print("\n[3/4] Running evaluations against the real pipeline...")
         results = []
         permission_pass = 0
         permission_fail = 0
@@ -333,29 +322,38 @@ def run_evaluation():
             adv = q.get("adversarial")
 
             if adv in ("jwt_escalation", "jwt_null"):
-                client = TestClient(app)
                 fake_payload = {"sub": "admin@clearancerag.test"}
-                if adv == "jwt_escalation":
-                    fake_payload["role"] = "superadmin"
-                else:
-                    fake_payload["role"] = None
-                
-                token = pyjwt.encode(fake_payload, get_settings().JWT_SECRET_KEY, algorithm="HS256")
-                resp = client.post("/retrieval/query", json={"question": question}, headers={"Authorization": f"Bearer "+token})
-                
-                chunks = []
-                if resp.status_code < 400:
-                    chunks = [{"title": "LEAK", "min_role_level": 999, "chunk_id": "none", "text_content": "leak", "document_id": "none", "chunk_index": 0}]
-                latency_ms = 0.0
-                user_role = UserRole.admin
+                fake_payload["role"] = "superadmin" if adv == "jwt_escalation" else None
+                token = pyjwt.encode(
+                    fake_payload, settings.JWT_SECRET_KEY, algorithm="HS256"
+                )
+
+                call = run_real_query_endpoint(client, token, question)
+                # A forged token must be rejected before any chunk is ever
+                # retrieved — status_code >= 400 means the auth layer
+                # correctly rejected it, so no chunks could have leaked.
+                chunks = (
+                    []
+                    if call["status_code"] >= 400
+                    else [{"min_role_level": 999}]  # can't happen if auth holds
+                )
+                perm_result = score_permission_compliance(chunks, user_role_level=0)
+                faith_result = {"passed": True, "reason": "N/A — adversarial auth case", "score": 1.0}
             else:
                 user_role = UserRole(asking_role)
-                chunks, latency_ms = run_permission_filtered_search(db, question, user_role)
-                if latency_ms > 0:
-                    latencies.append(latency_ms)
+                user_role_level = get_role_level(user_role)
+                query_embedding = embed_question(openai_client, question)
 
-            # Score permission compliance
-            perm_result = score_permission_compliance(chunks, q, user_role)
+                chunks, latency_ms = run_real_permission_search(
+                    db, query_embedding, user_role
+                )
+                latencies.append(latency_ms)
+
+                call = run_real_query_endpoint(client, jwts[asking_role], question)
+
+                perm_result = score_permission_compliance(chunks, user_role_level)
+                faith_result = score_faithfulness(call["full_response"], q)
+
             permission_total += 1
             if perm_result["passed"]:
                 permission_pass += 1
@@ -364,14 +362,12 @@ def run_evaluation():
 
             if is_boundary:
                 boundary_total += 1
-                if perm_result["passed"]:
+                if perm_result["passed"] and faith_result.get("passed", True):
                     boundary_pass += 1
                 else:
                     boundary_fail += 1
 
-            # Score faithfulness
-            faith_result = score_faithfulness(chunks, q)
-            if not q.get("expected_refusal", False):
+            if not q.get("expected_refusal", False) and adv not in ("jwt_escalation", "jwt_null"):
                 faithfulness_scores.append(faith_result["score"])
 
             result = {
@@ -380,14 +376,16 @@ def run_evaluation():
                 "asking_role": asking_role,
                 "is_boundary_case": is_boundary,
                 "expected_refusal": q.get("expected_refusal", False),
-                "chunks_returned": len(chunks),
-                "chunk_titles": [c["title"] for c in chunks],
+                "sources_returned": len(call["sources"]),
+                "source_titles": [s.get("title") for s in call["sources"]],
+                "generated_answer": call["full_response"],
                 "permission_compliance": perm_result,
                 "faithfulness": faith_result,
             }
             results.append(result)
 
-            status = "✓" if perm_result["passed"] else "✗"
+            overall_pass = perm_result["passed"] and faith_result.get("passed", True)
+            status = "✓" if overall_pass else "✗"
             print(f"  {status} [{qid}] ({asking_role}) {question[:50]}...")
 
         # Calculate summary stats
@@ -399,12 +397,13 @@ def run_evaluation():
         latencies.sort()
         avg_lat = sum(latencies) / len(latencies) if latencies else 0
         p95_idx = int(len(latencies) * 0.95) if latencies else 0
-        p95_lat = latencies[p95_idx] if latencies else 0
+        p95_lat = latencies[min(p95_idx, len(latencies) - 1)] if latencies else 0
 
         summary = {
             "retrieval_latency": {
                 "avg_ms": round(avg_lat, 2),
-                "p95_ms": round(p95_lat, 2)
+                "p95_ms": round(p95_lat, 2),
+                "note": "DB-only: real pgvector <=> query time, excludes the OpenAI embedding call",
             },
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "total_questions": len(golden_dataset),
@@ -423,6 +422,7 @@ def run_evaluation():
             "faithfulness": {
                 "average_score": f"{avg_faithfulness:.2f}",
                 "evaluated_count": len(faithfulness_scores),
+                "note": "Scored against the LLM's real generated answer, not retrieved chunk text",
             },
         }
 
@@ -470,6 +470,12 @@ def _generate_markdown_report(summary: dict, results: list[dict]):
         "",
         f"**Generated**: {summary['timestamp']}",
         "",
+        "This report is produced by running every golden-dataset question",
+        "through the real `/retrieval/query` endpoint — real OpenAI",
+        "embedding, real `permission_filtered_search` against pgvector,",
+        "real `gpt-4o-mini` generation — and scoring against the model's",
+        "actual generated answer, not the retrieved chunk text.",
+        "",
         "## Summary",
         "",
         "| Metric | Value |",
@@ -481,14 +487,13 @@ def _generate_markdown_report(summary: dict, results: list[dict]):
         f"| Avg Retrieval Latency | {summary['retrieval_latency']['avg_ms']}ms |",
         f"| p95 Retrieval Latency | {summary['retrieval_latency']['p95_ms']}ms |",
         "",
-        "**Performance Metric:** Avg Retrieval Latency: {avg}ms \| p95 Retrieval Latency: {p95}ms".format(
-            avg=summary['retrieval_latency']['avg_ms'],
-            p95=summary['retrieval_latency']['p95_ms']
-        ),
+        f"> Retrieval latency is DB-only ({summary['retrieval_latency']['note']}).",
+        f"> Faithfulness is scored against the LLM's real answer "
+        f"({summary['faithfulness']['note']}).",
         "",
         "## Permission Compliance Results",
         "",
-        "| ID | Role | Boundary? | Chunks | Status | Reason |",
+        "| ID | Role | Boundary? | Sources | Status | Reason |",
         "|---|---|---|---|---|---|",
     ]
 
@@ -498,7 +503,7 @@ def _generate_markdown_report(summary: dict, results: list[dict]):
         boundary = "🔒 Yes" if r["is_boundary_case"] else "No"
         lines.append(
             f"| {r['id']} | {r['asking_role']} | {boundary} | "
-            f"{r['chunks_returned']} | {status} | {perm['reason'][:60]} |"
+            f"{r['sources_returned']} | {status} | {perm['reason'][:60]} |"
         )
 
     lines.extend([
@@ -512,7 +517,8 @@ def _generate_markdown_report(summary: dict, results: list[dict]):
     for r in results:
         faith = r["faithfulness"]
         if r.get("expected_refusal"):
-            lines.append(f"| {r['id']} | {r['asking_role']} | N/A | — | — |")
+            status = "✅" if faith.get("passed") else "❌"
+            lines.append(f"| {r['id']} | {r['asking_role']} | {status} refusal | — | — |")
         else:
             found = ", ".join(faith.get("found", []))
             missing = ", ".join(faith.get("missing", []))
@@ -526,8 +532,10 @@ def _generate_markdown_report(summary: dict, results: list[dict]):
         "---",
         "",
         "> **Note**: Permission compliance is enforced at the database layer via",
-        "> `WHERE dc.min_role_level <= :user_role_level`. The eval harness tests",
-        "> this filter directly against the seeded synthetic corpus.",
+        "> `WHERE dc.min_role_level <= :user_role_level`, verified here by calling",
+        "> `permission_filtered_search` directly against the seeded synthetic",
+        "> corpus. Faithfulness and refusal correctness are verified by calling",
+        "> `/retrieval/query` end-to-end and checking the model's real output.",
     ])
 
     with open(EVAL_REPORT_PATH, "w", encoding="utf-8") as f:

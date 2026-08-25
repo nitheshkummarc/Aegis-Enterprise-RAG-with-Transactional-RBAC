@@ -10,6 +10,7 @@ from app.main import app
 from app.db.session import get_db
 from app.db.models import Base, User, UserRole
 from app.core.security import hash_password
+from app.core.limiter import limiter
 from app.config import get_settings, Settings
 
 
@@ -36,6 +37,16 @@ def override_settings(monkeypatch):
     monkeypatch.setattr("app.auth.jwt.get_settings", get_test_settings)
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    """The rate limiter's storage is a module-level singleton shared across
+    the whole test session — without resetting it, a test's pass/fail can
+    depend on how many rate-limited calls earlier tests happened to make."""
+    limiter.reset()
+    yield
+    limiter.reset()
 
 
 # ---------------------------------------------------------------------------

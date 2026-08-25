@@ -1,7 +1,7 @@
 import { getSession } from "next-auth/react";
 import { auth } from "@/auth";
 
-const BACKEND_URL = "http://127.0.0.1:8000";
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:8000";
 
 /**
  * Automatically extracts the JWT from the NextAuth session and appends it to requests.

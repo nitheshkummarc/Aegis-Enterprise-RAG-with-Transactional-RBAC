@@ -1,6 +1,12 @@
 """Integration tests for auth routes (/auth/register, /auth/login).
 
-Tests: registration success/failure, login success/failure, role in token claims.
+RegisterRequest has no `role` field and forbids unknown ones (extra="forbid")
+— every self-registered user is a viewer. Non-viewer test users are seeded
+directly via the DB (conftest's admin_user/manager_user/viewer_user
+fixtures), not through the public register endpoint.
+
+Tests: registration success/failure, mass-assignment rejection, login
+success/failure, role in token claims.
 """
 
 import pytest
@@ -11,11 +17,11 @@ class TestRegister:
     """Tests for POST /auth/register."""
 
     def test_register_success(self, client):
-        """New user registration returns 201 with a valid token."""
+        """New user registration returns 201 with a valid token, role forced
+        to viewer."""
         response = client.post("/auth/register", json={
             "email": "newuser@test.com",
             "password": "securepassword",
-            "role": "viewer",
         })
         assert response.status_code == 201
         data = response.json()
@@ -23,26 +29,21 @@ class TestRegister:
         assert data["token_type"] == "bearer"
         assert data["role"] == "viewer"
 
-    def test_register_admin_role(self, client):
-        """Registration with admin role succeeds and token has admin role."""
+    def test_register_rejects_role_field(self, client):
+        """A client-supplied role is rejected outright (mass-assignment
+        protection), not silently ignored."""
         response = client.post("/auth/register", json={
-            "email": "admin@newtest.com",
-            "password": "adminpass",
+            "email": "wannabe-admin@test.com",
+            "password": "securepassword",
             "role": "admin",
         })
-        assert response.status_code == 201
-        data = response.json()
-        assert data["role"] == "admin"
-        # Verify the token also contains the correct role claim
-        payload = decode_access_token(data["access_token"])
-        assert payload["role"] == "admin"
+        assert response.status_code == 422
 
     def test_register_duplicate_email(self, client):
         """Registering the same email twice returns 409."""
         user_data = {
             "email": "duplicate@test.com",
             "password": "password123",
-            "role": "viewer",
         }
         client.post("/auth/register", json=user_data)
         response = client.post("/auth/register", json=user_data)
@@ -53,7 +54,6 @@ class TestRegister:
         response = client.post("/auth/register", json={
             "email": "not-an-email",
             "password": "password123",
-            "role": "viewer",
         })
         assert response.status_code == 422
 
@@ -63,13 +63,10 @@ class TestLogin:
 
     def test_login_success(self, client):
         """Registered user can login and gets a valid token."""
-        # First register
         client.post("/auth/register", json={
             "email": "loginuser@test.com",
             "password": "mypassword",
-            "role": "manager",
         })
-        # Then login
         response = client.post("/auth/login", json={
             "email": "loginuser@test.com",
             "password": "mypassword",
@@ -78,14 +75,13 @@ class TestLogin:
         data = response.json()
         assert "access_token" in data
         assert data["token_type"] == "bearer"
-        assert data["role"] == "manager"
+        assert data["role"] == "viewer"
 
     def test_login_wrong_password(self, client):
         """Login with incorrect password returns 401."""
         client.post("/auth/register", json={
             "email": "wrongpw@test.com",
             "password": "correctpassword",
-            "role": "viewer",
         })
         response = client.post("/auth/login", json={
             "email": "wrongpw@test.com",
@@ -101,34 +97,30 @@ class TestLogin:
         })
         assert response.status_code == 401
 
-    def test_login_role_in_token(self, client):
+    def test_login_role_in_token(self, client, admin_user):
         """Token claims contain the correct role after login."""
-        client.post("/auth/register", json={
-            "email": "rolecheck@test.com",
-            "password": "password123",
-            "role": "admin",
-        })
         response = client.post("/auth/login", json={
-            "email": "rolecheck@test.com",
-            "password": "password123",
+            "email": admin_user.email,
+            "password": "adminpass",
         })
         data = response.json()
         payload = decode_access_token(data["access_token"])
-        assert payload["sub"] == "rolecheck@test.com"
+        assert payload["sub"] == admin_user.email
         assert payload["role"] == "admin"
 
-    def test_each_role_can_login(self, client):
-        """All three roles (viewer, manager, admin) can register and login."""
-        for role in ["viewer", "manager", "admin"]:
-            email = f"{role}@roletest.com"
-            client.post("/auth/register", json={
-                "email": email,
-                "password": "password123",
-                "role": role,
-            })
+    def test_each_seeded_role_can_login(
+        self, client, viewer_user, manager_user, admin_user
+    ):
+        """All three roles can login and get their own role back."""
+        cases = [
+            (viewer_user, "viewerpass", "viewer"),
+            (manager_user, "managerpass", "manager"),
+            (admin_user, "adminpass", "admin"),
+        ]
+        for user, password, expected_role in cases:
             response = client.post("/auth/login", json={
-                "email": email,
-                "password": "password123",
+                "email": user.email,
+                "password": password,
             })
             assert response.status_code == 200
-            assert response.json()["role"] == role
+            assert response.json()["role"] == expected_role

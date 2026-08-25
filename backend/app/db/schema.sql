@@ -69,22 +69,48 @@ CREATE TABLE IF NOT EXISTS document_chunks (
 -- Indexes
 -- =============================================================================
 
--- HNSW vector index for cosine distance nearest-neighbor search.
+-- HNSW vector indexes for cosine distance nearest-neighbor search.
 -- m=16, ef_construction=64 are reasonable starting defaults.
 --
--- WARNING: This index does NOT guarantee efficient combined filtering with
--- the min_role_level WHERE clause. pgvector HNSW is an ANN index; it does
--- not natively support efficient composite filtering the way a B-tree does.
--- Run EXPLAIN ANALYZE on the permission_filtered_search query once you have
--- >10K chunks to verify the planner is actually using this index under the
--- role filter. If it falls back to a sequential scan, consider:
---   (a) pgvector 0.7+ iterative/filtered index scan support
---   (b) Partial HNSW indexes per role level
---   (c) Pre-filtering with a B-tree index on min_role_level
-CREATE INDEX IF NOT EXISTS idx_document_chunks_embedding
+-- One plain HNSW index over the whole table does NOT guarantee efficient
+-- combined filtering with the min_role_level WHERE clause — pgvector HNSW
+-- is an ANN index and doesn't natively support composite filtering the way
+-- a B-tree does. At scale, a manager-level query still risks the planner
+-- ANN-scanning admin-only chunks only to discard them post-filter.
+--
+-- Instead of one full index, we build one CUMULATIVE PARTIAL HNSW index per
+-- role level (roles are a fixed 3-tier set — viewer=0/manager=1/admin=2 —
+-- so this is 3 indexes, not N). Each index only covers the chunks that
+-- tier can see, so a viewer's search only ever ANN-scans public content,
+-- a manager's only scans public+internal, and admin's covers everything
+-- (equivalent to the old single full index). Query-side, nothing changes:
+-- WHERE min_role_level <= :user_role_level matches exactly one of these
+-- partial predicates for any of the 3 valid role levels.
+--
+-- Run EXPLAIN ANALYZE on permission_filtered_search once the corpus is
+-- large (>10K chunks) to confirm the planner is actually choosing the
+-- matching partial index rather than falling back to a sequential scan.
+CREATE INDEX IF NOT EXISTS idx_document_chunks_hnsw_level0
 ON document_chunks
 USING hnsw (embedding vector_cosine_ops)
-WITH (m = 16, ef_construction = 64);
+WITH (m = 16, ef_construction = 64)
+WHERE min_role_level <= 0;
+
+CREATE INDEX IF NOT EXISTS idx_document_chunks_hnsw_level1
+ON document_chunks
+USING hnsw (embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64)
+WHERE min_role_level <= 1;
+
+CREATE INDEX IF NOT EXISTS idx_document_chunks_hnsw_level2
+ON document_chunks
+USING hnsw (embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64)
+WHERE min_role_level <= 2;
+
+-- Drop the old single full-table index if it exists (superseded by
+-- idx_document_chunks_hnsw_level2 above, which covers the same rows).
+DROP INDEX IF EXISTS idx_document_chunks_embedding;
 
 -- B-tree index on min_role_level for the WHERE filter in permission queries.
 -- This helps the planner consider a pre-filter strategy before the ANN scan.

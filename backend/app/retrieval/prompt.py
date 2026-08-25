@@ -4,6 +4,8 @@ Exact text from Section 5 of the Master Build Prompt. Do not modify
 the wording — the eval harness checks for the exact refusal string.
 """
 
+import re
+
 SYSTEM_PROMPT_TEMPLATE = """You are an enterprise assistant. Answer the user's question using ONLY the
 provided context below. If the answer is not explicitly present in the
 context, reply exactly with: "I do not have access to that information."
@@ -25,6 +27,11 @@ def build_prompt(context: str, question: str) -> str:
     # Do NOT use SYSTEM_PROMPT_TEMPLATE.format() — user-controlled content
     # in `question` or `context` could contain {braces} that .format()
     # would try to resolve, causing KeyError or information leakage.
-    result = SYSTEM_PROMPT_TEMPLATE.replace("{context}", context)
-    result = result.replace("{question}", question)
-    return result
+    #
+    # Do NOT chain two .replace() calls either: if context itself contains
+    # the literal substring "{question}", a second replace() over the
+    # already-substituted result would overwrite it with the live question.
+    # Substitute both placeholders in a single pass instead.
+    replacements = {"{context}": context, "{question}": question}
+    pattern = re.compile("|".join(re.escape(k) for k in replacements))
+    return pattern.sub(lambda m: replacements[m.group(0)], SYSTEM_PROMPT_TEMPLATE)

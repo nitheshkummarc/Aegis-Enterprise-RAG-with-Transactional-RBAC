@@ -25,9 +25,10 @@ Aegis solves this by enforcing Role-Based Access Control (RBAC) at the database 
 
 To support fast similarity search at scale, Aegis utilizes PostgreSQL with the `pgvector` extension.
 
-*   **Operator Match**: The database is configured with an HNSW (Hierarchical Navigable Small World) index specifically using the `vector_cosine_ops` operator class. 
+*   **Operator Match**: The database is configured with HNSW (Hierarchical Navigable Small World) indexes specifically using the `vector_cosine_ops` operator class.
 *   **Query Match**: The retrieval SQL query explicitly uses the `<=>` operator (cosine distance) rather than `<->` (L2 distance), ensuring the query path perfectly matches the index path.
-*   **Why it matters**: Using cosine distance aligns precisely with OpenAI's `text-embedding-3-small` output geometry, while the HNSW index ensures sub-millisecond retrieval times even as the chunk table grows to millions of rows.
+*   **Per-role partial indexes**: A single HNSW index over the whole table doesn't natively combine with the `min_role_level` filter — the planner can end up ANN-scanning chunks a role isn't even allowed to see, only to discard them post-filter. Since roles are a fixed 3-tier set, Aegis instead builds one *cumulative partial* HNSW index per level (`WHERE min_role_level <= 0/1/2`): a viewer's query only ever scans public content, a manager's scans public+internal, and admin's covers everything. This keeps ANN scan cost proportional to what the querying role can actually see, not the whole table.
+*   **Why it matters**: Using cosine distance aligns precisely with OpenAI's `text-embedding-3-small` output geometry, and the per-role partial indexes keep retrieval fast for lower-privilege roles even as the admin-only tier of the corpus grows large.
 
 ## 3. Isolated Celery Worker Sessions
 
@@ -36,7 +37,14 @@ Asynchronous document ingestion is handled by Celery to prevent long-running PDF
 *   **State Isolation**: The Celery worker module (`worker.py`) instantiates its own isolated SQLAlchemy `create_engine` and `sessionmaker`. 
 *   **Why it matters**: It deliberately avoids importing FastAPI's request-scoped `get_db` dependency. Sharing a database connection pool across multiprocessing boundaries is a common anti-pattern that leads to connection pool exhaustion and "no application context" errors under heavy upload load. 
 
-## 4. Langfuse Observability
+## 4. Table-Aware PDF Extraction
+
+PyMuPDF's plain `page.get_text()` reads a table cell-by-cell, left-to-right and top-to-bottom, as flat prose — a revenue-by-region table becomes an unlabeled run of numbers, with each value detached from its row/column label.
+
+*   **Detection**: Each page is also passed through PyMuPDF's `find_tables()`, and any detected table is additionally rendered as a markdown table appended to that page's text.
+*   **Why it matters**: Chunking and embedding now have a coherent, row-labeled version of every detected table to work with, not just the scrambled prose version. Table detection is best-effort and wrapped so a page it misjudges never breaks plain text extraction for that page.
+
+## 5. Langfuse Observability
 
 Aegis integrates Langfuse to monitor the RAG pipeline's behavior in production.
 

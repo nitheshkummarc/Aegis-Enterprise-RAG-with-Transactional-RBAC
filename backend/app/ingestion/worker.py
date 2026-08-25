@@ -13,6 +13,10 @@ Ingestion flow (post-refactor):
 5. On success, delete the raw PDF from storage (dead weight after chunking).
 6. On persistent failure (corrupt PDF, extraction error), mark as 'failed'
    (dead-letter) rather than infinite-retrying.
+
+Also defines cleanup_stuck_documents, a periodic (Celery Beat) task that
+dead-letters Documents orphaned in status='processing' with no chunks —
+see the bottom of this module.
 """
 
 import logging
@@ -21,6 +25,7 @@ import tempfile
 import uuid
 
 from celery import Celery
+from celery.exceptions import Retry
 from sqlalchemy import create_engine, select, func
 from sqlalchemy.orm import sessionmaker, Session
 
@@ -46,6 +51,13 @@ celery_app.conf.update(
     accept_content=["json"],
     timezone="UTC",
     enable_utc=True,
+    beat_schedule={
+        # Run via: celery -A app.ingestion.worker.celery_app beat
+        "cleanup-stuck-documents": {
+            "task": "cleanup_stuck_documents",
+            "schedule": 900.0,  # every 15 minutes
+        },
+    },
 )
 
 
@@ -55,12 +67,14 @@ celery_app.conf.update(
 
 # Worker-local engine — created once per process, NOT per task.
 # Creating a new engine per task leaks connection pools.
-_worker_engine = create_engine(
-    settings.DATABASE_URL,
-    pool_pre_ping=True,
-    pool_size=3,
-    max_overflow=5,
-)
+#
+# pool_size/max_overflow only apply to QueuePool (Postgres). SQLite's
+# default pool class doesn't accept them, so skip them for sqlite:// URLs —
+# needed for the test suite, which points DATABASE_URL at SQLite.
+_worker_engine_kwargs = {"pool_pre_ping": True}
+if not settings.DATABASE_URL.startswith("sqlite"):
+    _worker_engine_kwargs.update(pool_size=3, max_overflow=5)
+_worker_engine = create_engine(settings.DATABASE_URL, **_worker_engine_kwargs)
 _WorkerSessionFactory = sessionmaker(
     autocommit=False, autoflush=False, bind=_worker_engine
 )
@@ -117,7 +131,9 @@ def _delete_from_storage(object_key: str) -> None:
     bind=True,
     max_retries=3,
     default_retry_delay=5,
-    autoretry_for=(),  # We handle retries manually for OpenAI only
+    autoretry_for=(),  # Retries are triggered explicitly via self.retry() below,
+                        # not Celery's blanket autoretry, so terminal failures
+                        # (corrupt PDF, extraction errors) can still fail fast.
     name="ingest_document",
 )
 def ingest_document(self, document_id: str, object_key: str) -> dict:
@@ -186,10 +202,14 @@ def ingest_document(self, document_id: str, object_key: str) -> dict:
         try:
             _download_from_storage(object_key, temp_path)
         except Exception as e:
-            logger.error("Failed to download %s: %s", object_key, e)
-            doc.status = "failed"
-            db.commit()
-            return {"status": "failed", "detail": f"Storage download error: {e}"}
+            logger.warning(
+                "Storage download failed for document %s (attempt %d/%d): %s",
+                document_id, self.request.retries + 1, self.max_retries + 1, e,
+            )
+            # Transient (network/timeout) — retry per max_retries/
+            # default_retry_delay. self.retry() re-raises `e` once retries
+            # are exhausted, and the outer handler marks the doc failed.
+            raise self.retry(exc=e)
 
         # ------------------------------------------------------------------
         # Step 2: PDF extraction (fail-fast — corrupt PDF is not transient)
@@ -265,6 +285,9 @@ def ingest_document(self, document_id: str, object_key: str) -> dict:
             "chunks_created": len(chunks),
         }
 
+    except Retry:
+        # A retry is already scheduled — leave status='processing' as-is.
+        raise
     except Exception as e:
         db.rollback()
         logger.exception("Unexpected error processing document %s", document_id)
@@ -282,9 +305,14 @@ def ingest_document(self, document_id: str, object_key: str) -> dict:
             logger.warning("Failed to mark document %s as failed: %s", document_id, inner_e)
         raise
     finally:
-        # Always clean up the temp file — even on crash
+        # Best-effort temp file cleanup. On Windows, a handle PyMuPDF held
+        # after a failed parse can still be locking the file here — that
+        # must not crash the task or mask the real error.
         if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
+            try:
+                os.remove(temp_path)
+            except OSError as e:
+                logger.warning("Failed to remove temp file %s: %s", temp_path, e)
         db.close()
 
 
@@ -320,3 +348,55 @@ def _embed_with_retry(task, chunks: list[str]) -> list[list[float]]:
             raise
 
     raise RuntimeError("Embedding failed after max retries")  # Should not reach here
+
+
+# ---------------------------------------------------------------------------
+# Periodic cleanup task
+# ---------------------------------------------------------------------------
+
+@celery_app.task(name="cleanup_stuck_documents")
+def cleanup_stuck_documents() -> dict:
+    """Dead-letter Documents stuck in status='processing' with no chunks.
+
+    Covers rows orphaned before ingest_document ever runs (lost Celery
+    message, worker killed before its first commit, etc). Runs on a
+    schedule via Celery Beat — see beat_schedule above.
+    """
+    from datetime import datetime, timedelta, timezone
+    from app.db.models import Document, DocumentChunk
+
+    timeout_minutes = get_settings().STUCK_DOCUMENT_TIMEOUT_MINUTES
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
+
+    db = _get_worker_session()
+    try:
+        stuck_docs = (
+            db.query(Document)
+            .filter(Document.status == "processing", Document.updated_at < cutoff)
+            .all()
+        )
+
+        cleaned_ids = []
+        for doc in stuck_docs:
+            chunk_count = db.execute(
+                select(func.count()).where(DocumentChunk.document_id == doc.id)
+            ).scalar()
+            if chunk_count:
+                # Chunks exist but status was never flipped — needs manual
+                # review, not an auto dead-letter.
+                continue
+            doc.status = "failed"
+            cleaned_ids.append(str(doc.id))
+
+        db.commit()
+
+        if cleaned_ids:
+            logger.warning(
+                "cleanup_stuck_documents: marked %d document(s) as 'failed' "
+                "(stuck in 'processing' with no chunks for over %d minutes): %s",
+                len(cleaned_ids), timeout_minutes, cleaned_ids,
+            )
+
+        return {"cleaned_count": len(cleaned_ids), "document_ids": cleaned_ids}
+    finally:
+        db.close()

@@ -29,5 +29,47 @@ services:
       timeout: 5s
       retries: 5
 
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: clearancerag-backend
+    env_file:
+      - ./backend/.env
+    environment:
+      # Override the .env values (which point at localhost, for running the
+      # backend outside Docker) with the in-network service hostnames.
+      DATABASE_URL: postgresql+psycopg://clearancerag:clearancerag@postgres:5432/clearancerag
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  celery_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: clearancerag-celery-worker
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://clearancerag:clearancerag@postgres:5432/clearancerag
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A app.ingestion.worker.celery_app worker --loglevel=info
+
+# The frontend is NOT containerized here — run it separately:
+#   cd frontend && npm install && npm run dev
+# (see README Quickstart).
+
 volumes:
   pgdata:

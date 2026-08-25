@@ -45,7 +45,7 @@ LIMIT 3;
 | **Backend** | Python 3.11, FastAPI | Async-native, high performance, strict Pydantic validation. |
 | **Frontend** | Next.js 15 (App Router), Tailwind, Auth.js v5 | Modern SSR, secure credential-based JWT session management. |
 | **Database** | PostgreSQL 16 + `pgvector` | Keeps relational metadata and vector embeddings in one transactional boundary. |
-| **Vector Index** | HNSW (`vector_cosine_ops`) | Sub-millisecond retrieval latency for normalized OpenAI embeddings. |
+| **Vector Index** | HNSW (`vector_cosine_ops`), one cumulative partial index per role level | Sub-millisecond retrieval latency; the per-role split keeps a viewer's search from ever ANN-scanning admin-only chunks. |
 | **Async Queue** | Celery + Redis | Decouples heavy PDF parsing/embedding from the HTTP request lifecycle. |
 | **LLM** | OpenAI (`gpt-4o-mini`, `text-embedding-3-small`) | Optimized for low latency and high instruction-following. |
 | **Observability** | Langfuse (Cloud) | End-to-end tracing of retrieval latency, token costs, and RBAC enforcement. |
@@ -56,8 +56,8 @@ LIMIT 3;
 
 - **🔒 Database-Layer RBAC:** Row-level permission filtering via SQL `WHERE` clauses, eliminating application-layer authorization bugs.
 - **🛡️ Enterprise Security Hardening:** Strict Pydantic models (`extra="forbid"`) to prevent mass assignment, `slowapi` rate-limiting on auth endpoints to prevent credential stuffing, JWT algorithm pinning, and extensive `.gitignore` isolation.
-- **⚡ Async Ingestion Pipeline:** Celery workers with isolated DB sessions handle PyMuPDF extraction and OpenAI embedding, featuring fail-fast error handling for corrupt PDFs and exponential backoff for API rate limits.
-- **📊 Adversarial Evaluation Harness:** A custom Python script that tests the system against SQL injection payloads, malformed JWTs, and privilege escalation attempts, ensuring 100% deterministic security compliance.
+- **⚡ Async Ingestion Pipeline:** Celery workers with isolated DB sessions handle table-aware PyMuPDF extraction (detected tables are rendered as markdown so rows/columns survive parsing) and OpenAI embedding — transient storage failures retry automatically, while corrupt PDFs and extraction errors fail fast with no retry. A periodic cleanup task dead-letters any document orphaned mid-upload.
+- **📊 Adversarial Evaluation Harness:** Runs the golden dataset through the real `/retrieval/query` endpoint — real embeddings, real pgvector search, real LLM generation — including SQL injection payloads, malformed JWTs, and privilege escalation attempts, scored against the model's actual output rather than the retrieved chunks alone.
 - **📈 Hard Performance Metrics:** Instrumented to measure and report p95 database retrieval latency, proving the efficiency of the single-table-scan design.
 - **👁️ End-to-End Observability:** Langfuse integration traces every query, separating DB retrieval time from LLM generation latency.
 
@@ -79,12 +79,26 @@ cp frontend/.env.example frontend/.env.local
 # Edit backend/.env and frontend/.env.local to add your API keys
 ```
 
-### 2. Launch the Stack
+### 2. Launch the Backend Stack
 ```bash
 docker-compose up -d --build
 ```
+This brings up Postgres (pgvector), Redis, the FastAPI backend (`:8000`), and
+the Celery worker. Migrations run automatically on backend startup.
 
-### 3. Access the Application
+**The frontend is not containerized** — run it separately:
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+### 3. Seed Test Users
+```bash
+docker-compose exec backend python -m scripts.seed_users
+```
+
+### 4. Access the Application
 Navigate to [http://localhost:3000](http://localhost:3000). Login with one of the seeded test users:
 
 | Role | Email | Password | Access Level |
@@ -97,19 +111,9 @@ Navigate to [http://localhost:3000](http://localhost:3000). Login with one of th
 
 ## 📊 Evaluation & Performance
 
-Aegis is rigorously tested against a synthetic corpus with strict cross-contamination checks. 
+Aegis is tested against a synthetic corpus with strict cross-contamination checks, using [`eval/run_eval.py`](backend/eval/run_eval.py) — which runs every golden-dataset question through the real `/retrieval/query` endpoint (real embeddings, real pgvector search, real LLM generation) and scores permission compliance and faithfulness against the model's actual output.
 
-### Security & Compliance
-- **Permission Compliance:** `100%` (25/25 cases, including 3 adversarial stress tests).
-- **Adversarial Tests Passed:** SQL Injection, JWT Privilege Escalation, Null Role handling.
-- **Faithfulness:** `1.00` average score on standard retrieval queries.
-
-### Performance Metrics
-Measured via the internal evaluation harness against the `pgvector` HNSW index:
-- **Average Retrieval Latency:** `~14ms`
-- **p95 Retrieval Latency:** `~22ms`
-
-*(Full details available in [`docs/EVAL_RESULTS.md`](backend/docs/EVAL_RESULTS.md))*
+> **Note:** The harness was recently rewritten to score against real end-to-end output instead of a keyword-matching approximation. Run `python -m eval.run_eval` to regenerate current numbers — see [`docs/EVAL_RESULTS.md`](backend/docs/EVAL_RESULTS.md) for the latest report and methodology.
 
 ---
 
@@ -130,14 +134,15 @@ Aegis/
 ├── backend/
 │   ├── app/
 │   │   ├── auth/           # JWT generation, Pydantic validation, RBAC dependencies
-│   │   ├── db/             # SQLAlchemy models, raw SQL Alembic migrations
-│   │   ├── documents/      # Upload endpoints, file handling
+│   │   ├── db/              # SQLAlchemy models, migrations (Alembic + schema.sql)
+│   │   ├── documents/      # Presigned upload, document CRUD
 │   │   ├── ingestion/      # Celery worker, PyMuPDF parser, chunker, embedder
 │   │   └── retrieval/      # Permission-filtered pgvector search, SSE streaming
+│   ├── docs/               # ARCHITECTURE.md, DEMO_SCRIPT.md, EVAL_RESULTS.md
 │   ├── eval/               # Golden dataset, adversarial stress tests, run_eval.py
 │   ├── scripts/            # Synthetic corpus generator with cross-contamination checks
 │   └── tests/              # Unit, Integration, and Security (RBAC) test suites
 ├── frontend/               # Next.js 15 App Router, Auth.js v5, SSE Chat UI
-├── docs/                   # ARCHITECTURE.md, DEMO_SCRIPT.md, EVAL_RESULTS.md
+├── .github/workflows/      # CI: backend test suite against real Postgres + Redis
 └── docker-compose.yml      # Postgres (pgvector), Redis, Backend, Celery Worker
 ```

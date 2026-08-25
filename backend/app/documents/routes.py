@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user, require_role
 from app.core.limiter import limiter
-from app.db.models import Document, User, UserRole
+from app.db.models import Document, ROLE_LEVEL_MAP, User, UserRole
 from app.db.session import get_db
 from app.documents.schemas import DocumentResponse, DocumentUploadResponse
 from app.documents.service import (
@@ -130,11 +130,21 @@ def request_upload_url(
         object_key="",  # Will be updated after URL generation
     )
 
-    # Generate presigned URL using the document's DB-generated ID
-    url_info = generate_upload_url(
-        user_id=current_user.id,
-        document_id=doc.id,
-    )
+    # Roll back the Document row on failure — otherwise it's stuck at
+    # status="processing" with no object_key and no task to ever process it.
+    try:
+        url_info = generate_upload_url(
+            user_id=current_user.id,
+            document_id=doc.id,
+        )
+    except Exception as e:
+        logger.error("Failed to generate upload URL for document %s: %s", doc.id, e)
+        db.delete(doc)
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to generate upload URL. Please try again.",
+        )
 
     # Update the document with the actual object key
     doc.object_key = url_info["object_key"]
@@ -193,9 +203,17 @@ def confirm_upload(
             detail=f"Document is already in state '{doc.status}'",
         )
 
-    # Push Celery task with object_key (not a local file path)
+    # Cross-check against the server-issued value, but always dispatch with
+    # doc.object_key, not body.object_key — the request body is never trusted
+    # for the actual storage path.
+    if body.object_key != doc.object_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="object_key does not match the object_key issued for this document",
+        )
+
     from app.ingestion.worker import ingest_document
-    ingest_document.delay(str(doc.id), body.object_key)
+    ingest_document.delay(str(doc.id), doc.object_key)
 
     return DocumentUploadResponse(
         id=doc.id,
@@ -210,8 +228,17 @@ def list_documents(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """List all documents."""
-    docs = db.query(Document).all()
+    """List documents visible at the current user's clearance level.
+
+    Same rule as the chunk-level search in retrieval/search.py: a document
+    is visible if min_role_level <= the user's role level.
+    """
+    user_role_level = ROLE_LEVEL_MAP.get(current_user.role, 0)
+    docs = (
+        db.query(Document)
+        .filter(Document.min_role_level <= user_role_level)
+        .all()
+    )
     return docs
 
 

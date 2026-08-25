@@ -2,11 +2,15 @@
 
 SSE payload format (from the Master Build Prompt):
     data: {"type": "token", "text": "partial answer chunk"}
+    data: {"type": "error", "detail": "human-readable failure reason"}
     data: {"type": "done", "sources": [{"document_id": "...", "title": "...", "chunk_id": "..."}]}
 
-The done event is ALWAYS the final event. Sources is empty if the query was
-refused (no permitted chunks found). The frontend's SourcesDropdown reads
-only from this final event.
+The done event is ALWAYS the final event. Sources reflects exactly what the
+permission-filtered search returned: empty means no permitted chunks (an
+RBAC refusal), never a generation failure. A mid-stream LLM error emits an
+"error" event first, then a done event with the real (permitted) sources —
+this keeps generation failures distinguishable from access refusals. The
+frontend's SourcesDropdown reads only from the final done event.
 """
 
 import json
@@ -14,13 +18,14 @@ import logging
 
 import openai
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user
 from app.config import get_settings
+from app.core.limiter import limiter
 from app.db.models import User, ROLE_LEVEL_MAP
 from app.db.session import get_db
 from app.retrieval.prompt import build_prompt
@@ -73,12 +78,18 @@ def _try_langfuse_trace(user: User, question: str):
 
 
 @router.post("/query")
+@limiter.limit("20/minute")
 async def query(
+    request: Request,
     body: QueryRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Embed user query → permission-filtered search → LLM generation → SSE stream."""
+    """Embed user query → permission-filtered search → LLM generation → SSE stream.
+
+    Rate-limited like the other cost-sensitive routes (auth, upload-url) —
+    each call is a billed OpenAI request.
+    """
     settings = get_settings()
     question = body.question
 
@@ -176,9 +187,15 @@ async def query(
                     })
         except Exception as e:
             logger.error("Generation error: %s", e)
+            # sources was computed before generation started, so it's still
+            # the real, permission-checked result — send it, not [].
+            yield _sse_event({
+                "type": "error",
+                "detail": "Generation failed. Please try again.",
+            })
             yield _sse_event({
                 "type": "done",
-                "sources": [],
+                "sources": sources,
             })
 
         if generation_span:

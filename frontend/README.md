@@ -1,36 +1,54 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Aegis Frontend
+
+Next.js 15 (App Router) chat UI for Aegis — a permission-aware RAG system.
+See the [root README](../README.md) for the full project overview and the
+[architecture doc](../backend/docs/ARCHITECTURE.md) for how RBAC is enforced.
+
+## How auth actually works
+
+Login is handled by NextAuth v5's credentials provider ([`src/auth.ts`](src/auth.ts)):
+the login form posts email/password to the *backend's* `/auth/login`
+endpoint, which returns a JWT; NextAuth stores that JWT in the session and
+[`src/lib/api.ts`](src/lib/api.ts)'s `fetchWithAuth` attaches it as a
+`Authorization: Bearer` header on every backend call.
+
+`src/utils/supabase/{client,server}.ts` are **not currently used** — nothing
+in the app calls `createClient()` from either file. Auth doesn't go through
+Supabase Auth at all; only the backend talks to Supabase, and only for file
+storage.
 
 ## Getting Started
 
-First, run the development server:
-
 ```bash
+npm install
+cp .env.example .env.local   # fill in NEXT_PUBLIC_BACKEND_URL and NEXTAUTH_SECRET
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000). Login with one of the
+backend's seeded test users (see the root README).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Environment variables
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Variable | Required | Notes |
+|---|---|---|
+| `NEXT_PUBLIC_BACKEND_URL` | Yes | Backend API base URL. Read by both `auth.ts` (server-side login) and `lib/api.ts` (also runs client-side, hence `NEXT_PUBLIC_`). |
+| `NEXTAUTH_SECRET` | Yes for `npm run start` | Auth.js tolerates a missing secret in `npm run dev` (console warning only) but throws in production. |
+| `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | No | Currently unused — see above. Only needed if you wire up direct Supabase usage. |
 
-## Learn More
+## Scripts
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm run dev     # start the dev server
+npm run build   # production build (also type-checks)
+npm run start   # run a production build
+npm run lint    # eslint
+npm test        # jest — component tests (src under tests/)
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Structure
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `src/app/` — App Router pages: `/login`, `/chat` (the SSE chat UI), and the NextAuth route handler under `api/auth/`.
+- `src/auth.ts` — NextAuth v5 config (credentials provider → backend `/auth/login`).
+- `src/lib/api.ts` — `fetchWithAuth`, the only place backend calls are made from.
+- `src/components/SourcesDropdown.tsx` — renders the permitted sources returned by a query, or the "no permitted sources" refusal state. Its "Admin Upload" badge is a role-conditional visual cue, not a wired-up upload flow — there is no upload UI yet; document ingestion currently happens via the backend's `scripts/generate_synthetic_corpus.py` or direct API calls to `/documents/upload-url` + `/documents/confirm-upload`.

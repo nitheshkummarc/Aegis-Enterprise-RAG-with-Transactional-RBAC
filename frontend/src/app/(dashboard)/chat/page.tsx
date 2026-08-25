@@ -11,6 +11,7 @@ type Message = {
   role: "user" | "assistant";
   content: string;
   sources?: Source[];
+  generationError?: boolean;
 };
 
 export default function ChatPage() {
@@ -94,10 +95,19 @@ export default function ChatPage() {
                       msg.id === aiMessageId ? { ...msg, content: aiContent } : msg
                     )
                   );
+                } else if (event.type === "error") {
+                  // Generation failed — distinct from an RBAC refusal (empty
+                  // sources on "done"). The following "done" still carries
+                  // the real permitted sources.
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.id === aiMessageId ? { ...msg, generationError: true } : msg
+                    )
+                  );
                 } else if (event.type === "done") {
                   // Final event with sources
-                  setMessages((prev) => 
-                    prev.map((msg) => 
+                  setMessages((prev) =>
+                    prev.map((msg) =>
                       msg.id === aiMessageId ? { ...msg, sources: event.sources } : msg
                     )
                   );
@@ -158,6 +168,11 @@ export default function ChatPage() {
                   <div className={`p-4 rounded-lg ${msg.role === "user" ? "bg-neutral-800 border border-neutral-700 text-neutral-100" : "bg-neutral-900 border border-neutral-800 text-neutral-200"}`}>
                     <p className="whitespace-pre-wrap">{msg.content || (msg.role === "assistant" && <span className="animate-pulse">Thinking...</span>)}</p>
                   </div>
+                  {msg.role === "assistant" && msg.generationError && (
+                    <p className="text-xs text-amber-500 mt-1">
+                      ⚠️ Response generation failed — this was not an access restriction.
+                    </p>
+                  )}
                   {msg.role === "assistant" && msg.sources !== undefined && (
                     <SourcesDropdown 
                       sources={msg.sources} 

@@ -3,19 +3,27 @@
 This script provides a concise, step-by-step walkthrough to demonstrate Aegis's Transactional RBAC capabilities in an interview or portfolio presentation setting.
 
 ## Prerequisites
-Ensure the system is running via `docker-compose up -d --build` and the test users are seeded.
+Ensure the system is running via `docker-compose up -d --build`, then seed users and demo content:
+```bash
+docker-compose exec backend python -m scripts.seed_users
+docker-compose exec backend python -m scripts.generate_synthetic_corpus
+```
+The frontend doesn't yet have a working upload UI — the "Admin Upload" badge
+next to Sources is a role-conditional visual cue (`data-testid="admin-upload-btn"`
+in `SourcesDropdown.tsx`), not a wired-up button. The synthetic corpus
+generator is what actually seeds demo content across all three clearance
+tiers, running it through the same chunking/embedding path a real upload
+would (`app.ingestion.chunker`, `app.ingestion.embedder`).
 
 ---
 
-## Step 1: Admin Data Ingestion
-1. Navigate to the Aegis Frontend at `http://localhost:3000`.
-2. Login using the admin credentials:
+## Step 1: Admin Data Ingestion (via the corpus generator)
+1. Run the seed commands above — this creates 10 documents (4 viewer-tier, 3 manager-tier, 3 admin-tier), each chunked and embedded exactly as a real upload would be.
+2. **Talking Point**: *"Ingestion — whether from a real upload or this seed script — chunks and embeds the document, and most importantly stamps `min_role_level` onto every single row in the Postgres `document_chunks` table, denormalized from the parent document."*
+3. Navigate to the Aegis Frontend at `http://localhost:3000` and login as admin:
    * **Email**: `admin@clearancerag.test`
    * **Password**: `admin123`
-3. Notice the presence of the **"Admin Upload"** button in the UI (only visible to admins).
-4. Click the upload button and upload a confidential document (e.g., *Executive Compensation & Equity Plan* with `min_role_level=2`).
-5. **Talking Point**: *"The document is asynchronously processed by a Celery worker. It's chunked and embedded, and most importantly, the `min_role_level` is denormalized and stamped onto every single row in the Postgres `document_chunks` table."*
-6. Log out.
+4. Log out.
 
 ---
 

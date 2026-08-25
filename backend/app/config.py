@@ -35,6 +35,16 @@ class Settings(BaseSettings):
     
     # CORS (comma-separated origins, e.g. "http://localhost:3000,https://myapp.com")
     CORS_ORIGINS: str = "http://localhost:3000"
+
+    # Comma-separated IPs of trusted reverse proxies (nginx, load balancer).
+    # X-Forwarded-For is only honored for the rate limiter when the direct
+    # connection IP is in this set — otherwise any client could rotate the
+    # header to bypass rate limiting. Empty by default (no proxy trusted).
+    TRUSTED_PROXY_IPS: str = ""
+
+    # How long (minutes) a Document may remain status="processing" with zero
+    # associated chunks before the periodic cleanup task marks it "failed".
+    STUCK_DOCUMENT_TIMEOUT_MINUTES: int = 60
     
     # Langfuse
     LANGFUSE_PUBLIC_KEY: str = ""
