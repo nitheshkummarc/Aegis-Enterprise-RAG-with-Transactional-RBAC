@@ -45,10 +45,12 @@ def upgrade() -> None:
         CREATE TABLE documents (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             title TEXT NOT NULL,
-            uploaded_by UUID NOT NULL REFERENCES users(id),
+            uploaded_by UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
             min_role_level SMALLINT NOT NULL CHECK (min_role_level BETWEEN 0 AND 2),
             status TEXT NOT NULL DEFAULT 'processing'
                 CHECK (status IN ('processing', 'ready', 'failed')),
+            object_key TEXT,
+            original_filename TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
