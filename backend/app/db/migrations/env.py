@@ -1,4 +1,4 @@
-"""Alembic environment configuration for ClearanceRAG.
+"""Alembic environment configuration for Aegis.
 
 Loads DATABASE_URL from app.config and runs migrations.
 """

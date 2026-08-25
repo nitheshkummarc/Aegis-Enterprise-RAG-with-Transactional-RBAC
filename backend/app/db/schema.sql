@@ -1,5 +1,5 @@
 -- =============================================================================
--- ClearanceRAG: Full Database Schema
+-- Aegis: Full Database Schema
 -- =============================================================================
 -- Run this script in your Supabase SQL Editor (or any PostgreSQL 15+ with
 -- pgvector installed) to set up the database from scratch.

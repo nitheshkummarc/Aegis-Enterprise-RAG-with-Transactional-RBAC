@@ -1,4 +1,4 @@
-"""FastAPI application entrypoint for ClearanceRAG."""
+"""FastAPI application entrypoint for Aegis."""
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +12,7 @@ from app.documents.routes import router as documents_router
 from app.retrieval.routes import router as retrieval_router
 
 app = FastAPI(
-    title="ClearanceRAG",
+    title="Aegis",
     description="Permission-aware RAG system with RBAC enforced at the database layer.",
     version="0.1.0",
 )

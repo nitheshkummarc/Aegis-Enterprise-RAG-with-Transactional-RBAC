@@ -21,7 +21,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Create the complete ClearanceRAG schema from Section 3 of the Master Build Prompt."""
+    """Create the complete Aegis schema from Section 3 of the Master Build Prompt."""
 
     # Enable pgvector extension
     op.execute("CREATE EXTENSION IF NOT EXISTS vector;")

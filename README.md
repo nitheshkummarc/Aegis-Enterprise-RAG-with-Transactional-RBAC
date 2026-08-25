@@ -16,13 +16,13 @@ Standard RAG architectures suffer from a critical security flaw: they dump all e
 
 **Aegis solves this by shifting security from the prompt to the database engine.** 
 
-By denormalizing permission levels (`min_role_level`) directly onto the vector chunks and using PostgreSQL's `pgvector` extension, Aegis ensures that unauthorized data is **physically blocked by the SQL query** before it ever reaches the LLM's context window. It is structurally impossible for the LLM to leak what it is never allowed to retrieve.
+By denormalizing permission levels (`min_role_level`) directly onto the vector chunks and using PostgreSQL's `pgvector` extension, Aegis ensures that unauthorized chunks are **excluded at the database query boundary** — before they enter the LLM's context window. The retrieval layer prevents unauthorized chunks from being included in generation; that guarantee is specific to this SQL query, not a claim about the system as a whole (an authorized chunk could still contain information a stricter policy would want redacted, and any other endpoint or upload-time misclassification is a separate concern with its own checks).
 
 ---
 
-## 🏗️ Core Architecture: Single-Table-Scan RBAC
+## 🏗️ Core Architecture: Single-Query RBAC
 
-The core thesis of Aegis is that **security and retrieval must happen in the same transactional boundary.**
+The core thesis of Aegis is that **security and retrieval must happen in the same transactional boundary.** (Not literally "one table scan" — the real query plan is a nested-loop join between `document_chunks` and `documents` for the title lookup. What's actually guaranteed is that the permission filter and the ANN ordering are one SQL statement, not a separate filter step in application code.)
 
 Instead of fetching top-k vectors and filtering them in Python (which is slow and prone to edge-case leaks), Aegis executes an atomic, permission-filtered vector search:
 
@@ -34,7 +34,7 @@ WHERE dc.min_role_level <= :user_role_level  -- RBAC Enforced Here
 ORDER BY dc.embedding <=> :query_embedding   -- Cosine Similarity via HNSW
 LIMIT 3;
 ```
-*This guarantees that the permission filter and the Approximate Nearest Neighbor (ANN) search occur in a single, optimized table scan.*
+*The permission filter and the ANN search are expressed as one query, executed against one of three cumulative partial HNSW indexes (one per role level) — see [Verified query plan](backend/docs/ARCHITECTURE.md#verified-query-plan) for `EXPLAIN (ANALYZE, BUFFERS)` evidence that PostgreSQL's planner actually selects the matching index per role, rather than a claim taken on faith.*
 
 ---
 
@@ -58,7 +58,7 @@ LIMIT 3;
 - **🛡️ Enterprise Security Hardening:** Strict Pydantic models (`extra="forbid"`) to prevent mass assignment, `slowapi` rate-limiting on auth endpoints to prevent credential stuffing, JWT algorithm pinning, and extensive `.gitignore` isolation.
 - **⚡ Async Ingestion Pipeline:** Celery workers with isolated DB sessions handle table-aware PyMuPDF extraction (detected tables are rendered as markdown so rows/columns survive parsing) and OpenAI embedding — transient storage failures retry automatically, while corrupt PDFs and extraction errors fail fast with no retry. A periodic cleanup task dead-letters any document orphaned mid-upload.
 - **📊 Adversarial Evaluation Harness:** Runs the golden dataset through the real `/retrieval/query` endpoint — real embeddings, real pgvector search, real LLM generation — including SQL injection payloads, malformed JWTs, and privilege escalation attempts, scored against the model's actual output rather than the retrieved chunks alone.
-- **📈 Hard Performance Metrics:** Instrumented to measure and report p95 database retrieval latency, proving the efficiency of the single-table-scan design.
+- **📈 Hard Performance Metrics:** Instrumented to measure and report p95 database retrieval latency for the permission-filtered query.
 - **👁️ End-to-End Observability:** Langfuse integration traces every query, separating DB retrieval time from LLM generation latency.
 
 ---
@@ -121,8 +121,8 @@ Aegis is tested against a synthetic corpus with strict cross-contamination check
 
 To maintain architectural purity and focus on the Transactional RBAC thesis, specific decisions were made:
 
-1. **HNSW Approximate Recall vs. Exact Search:** Aegis uses the HNSW index for sub-millisecond latency. HNSW is an Approximate Nearest Neighbor (ANN) algorithm. In edge cases, it might occasionally miss a permitted chunk compared to a brute-force sequential scan. *Mitigation: For <10k chunks, HNSW provides >99% recall. If 100% exact recall were legally mandated, we would swap to an `ivfflat` index, accepting a latency trade-off.*
-2. **No Standalone Vector DB:** We intentionally avoid Pinecone/Qdrant to keep relational metadata (RBAC constraints) tightly coupled with vector embeddings in PostgreSQL, enabling the single-table-scan.
+1. **HNSW Approximate Recall vs. Exact Search:** Aegis uses the HNSW index for sub-millisecond latency. HNSW is an Approximate Nearest Neighbor (ANN) algorithm. In edge cases, it might occasionally miss a permitted chunk compared to a brute-force sequential scan. *Mitigation: For <10k chunks, HNSW provides >99% recall. `ivfflat` is also approximate (recall depends on its `probes` parameter and is never exactly 100%) — the only way to guarantee 100% exact recall is to drop the ANN index and run a sequential scan, accepting the latency cost that comes with it.*
+2. **No Standalone Vector DB:** We intentionally avoid Pinecone/Qdrant to keep relational metadata (RBAC constraints) tightly coupled with vector embeddings in PostgreSQL, so the permission filter and the ANN search can be one query instead of two systems to keep in sync.
 3. **No Multi-Agent Orchestration:** The pipeline is linear and deterministic. Routing logic is written in pure FastAPI to keep the execution path transparent and easily auditable.
 
 ---

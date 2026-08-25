@@ -1,4 +1,4 @@
-"""Evaluation harness for ClearanceRAG.
+"""Evaluation harness for Aegis.
 
 Usage:
     cd backend
@@ -272,7 +272,7 @@ def score_faithfulness(full_response: str, question_data: dict) -> dict:
 def run_evaluation():
     """Run the full evaluation harness."""
     print("=" * 60)
-    print("ClearanceRAG — Evaluation Harness")
+    print("Aegis — Evaluation Harness")
     print("=" * 60)
 
     # Load golden dataset
@@ -466,7 +466,7 @@ def run_evaluation():
 def _generate_markdown_report(summary: dict, results: list[dict]):
     """Generate the human-readable EVAL_RESULTS.md report."""
     lines = [
-        "# ClearanceRAG — Evaluation Results",
+        "# Aegis — Evaluation Results",
         "",
         f"**Generated**: {summary['timestamp']}",
         "",

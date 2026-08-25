@@ -4,14 +4,14 @@ Aegis is an enterprise Retrieval-Augmented Generation (RAG) system built with a 
 
 This document outlines the architectural decisions that enable secure, permission-aware RAG without sacrificing retrieval speed or system reliability.
 
-## 1. Single-Table-Scan RBAC Enforcement
+## 1. Single-Query RBAC Enforcement
 
 The primary vulnerability in many enterprise RAG systems is fetching the top-k vectors first, and applying permission filters in-memory afterwards. This can lead to "empty response" bugs if all top-k documents are restricted, or complex multi-round retrieval loops.
 
-Aegis solves this by enforcing Role-Based Access Control (RBAC) at the database layer during the vector scan itself.
+Aegis solves this by enforcing Role-Based Access Control (RBAC) at the database layer, in the same SQL statement as the vector search.
 
 *   **Denormalized Permissions**: The `min_role_level` is stored directly on the `document_chunks` table.
-*   **Unified Query**: When a user queries the system, the vector similarity and the permission filter are executed in a single, atomic SQL query.
+*   **Unified Query**: When a user queries the system, the vector similarity ordering and the permission filter are expressed in a single SQL statement — there is no separate step where the application fetches unfiltered results and then discards the ones a role can't see.
     ```sql
     SELECT text_content 
     FROM document_chunks 
@@ -19,7 +19,29 @@ Aegis solves this by enforcing Role-Based Access Control (RBAC) at the database 
     ORDER BY embedding <=> :query_embedding 
     LIMIT 3;
     ```
-*   **Why it matters**: This guarantees that the system only retrieves chunks the user is explicitly authorized to see. If a viewer searches for admin-level content, the database strictly returns 0 results, allowing the LLM to cleanly refuse the prompt without being exposed to sensitive data.
+*   **Why it matters**: The system only ever *retrieves* chunks the user is authorized to see — the WHERE clause is part of the same statement doing the ANN ordering, not a post-filter over already-fetched rows. If a viewer searches for admin-level content, the database returns 0 rows, so the LLM has nothing to leak. See [Verified query plan](#verified-query-plan) below for what the actual execution plan does with this, rather than assuming it from the SQL text alone.
+
+### Verified query plan
+
+The claim above ("the filter and the ANN search are one query") is easy to write and easy to get wrong in practice — whether PostgreSQL's planner actually uses the matching partial index for a *bound parameter* (as opposed to a literal) is a real question, not a given. This was checked with `EXPLAIN (ANALYZE, BUFFERS)` against a live Postgres/pgvector 0.8.2 instance, using a throwaway 15,000-row dataset (5,000 chunks per role tier) inserted inside a transaction that was rolled back afterward — nothing was left in the database.
+
+| Role level queried | Index chosen | Rows in that index |
+|---|---|---|
+| `<= 0` (viewer) | `idx_document_chunks_hnsw_level0` | 5,000 |
+| `<= 1` (manager) | `idx_document_chunks_hnsw_level1` | 10,000 |
+| `<= 2` (admin) | `idx_document_chunks_hnsw_level2` | 15,000 |
+
+Each query's plan used an **Index Scan** on exactly the partial index whose predicate matches the bound `:user_role_level` value — confirming the planner re-plans per execution (seeing the actual parameter value) rather than reusing a generic cached plan that couldn't make this choice. A viewer's query never touches the manager- or admin-only index at all.
+
+**A caveat, so this section doesn't overclaim in the other direction**: the raw execution times from that same run (1561ms, 1797ms, then 7ms, in query order) are *not* a real latency comparison — they're a cache-warming artifact. The `Buffers` output makes this explicit:
+
+| Role level | Buffer hits (cached) | Buffer reads (disk) |
+|---|---|---|
+| `<= 0` (ran 1st) | 70 | 1466 |
+| `<= 1` (ran 2nd) | 783 | 914 |
+| `<= 2` (ran 3rd) | 1386 | 4 |
+
+The data had just been bulk-inserted in the same transaction, so nothing was in `shared_buffers` yet. Each query's candidate set is a superset of the one before it, so by the third query almost every relevant page was already cached from the first two — hence 4 disk reads instead of ~1,500. This says nothing about whether HNSW partial indexes are fast in general; it only confirms the planner picks the right one. Real latency numbers need a warm cache and a realistic corpus size, not a just-populated table in one transaction.
 
 ## 2. HNSW Indexing for Cosine Distance
 
@@ -53,5 +75,5 @@ Aegis integrates Langfuse to monitor the RAG pipeline's behavior in production.
 
 ### Known Trade-off: HNSW Approximate Recall vs. Exact Search
 Aegis uses the HNSW (Hierarchical Navigable Small World) index for sub-millisecond vector retrieval. HNSW is an Approximate Nearest Neighbor (ANN) algorithm. In edge cases where a permitted chunk is located in a distant graph cluster, HNSW might occasionally miss it compared to a brute-force sequential scan.
-- **Mitigation:** For this project's scale (<10k chunks), HNSW provides >99% recall with a fraction of the latency. If absolute 100% recall were a strict compliance requirement (e.g., legal discovery), we would swap the index type to `ivfflat` with a high `lists` parameter, accepting a latency trade-off for guaranteed exactness.
+- **Mitigation:** For this project's scale (<10k chunks), HNSW provides >99% recall with a fraction of the latency. `ivfflat` would *not* fix this if 100% exact recall were a strict compliance requirement — it's also an approximate algorithm; its recall depends on the `probes` parameter and only approaches 100% as `probes` approaches "every list," which degenerates into a full scan anyway. The only way to guarantee exact recall is to drop the ANN index for that query and run a sequential scan, accepting the latency cost directly rather than trading it for a different approximation.
 

@@ -1,4 +1,4 @@
-"""Shared test fixtures for ClearanceRAG backend tests."""
+"""Shared test fixtures for Aegis backend tests."""
 
 import pytest
 from fastapi.testclient import TestClient

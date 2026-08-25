@@ -6,7 +6,7 @@ from functools import lru_cache
 
 
 class Settings(BaseSettings):
-    """ClearanceRAG application settings.
+    """Aegis application settings.
     
     All variable names match the .env.example exactly.
     """

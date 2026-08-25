@@ -1,4 +1,4 @@
-"""Custom exception classes for ClearanceRAG."""
+"""Custom exception classes for Aegis."""
 
 from fastapi import HTTPException, status
 

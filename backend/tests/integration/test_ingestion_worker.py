@@ -135,7 +135,7 @@ def _eager_celery(celery_app):
 
 
 SAMPLE_PDF_TEXT = (
-    "This is a test policy document for ClearanceRAG testing. "
+    "This is a test policy document for Aegis testing. "
     "It contains enough text to produce at least one chunk when "
     "processed by the ingestion pipeline. The policy states that "
     "all employees must follow the guidelines set forth by the "

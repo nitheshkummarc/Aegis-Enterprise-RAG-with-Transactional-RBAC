@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM models for ClearanceRAG.
+"""SQLAlchemy ORM models for Aegis.
 
 These map to the schema defined in Section 3 of the Master Build Prompt.
 The embedding column uses pgvector's Vector type (not ARRAY(Float)) to
