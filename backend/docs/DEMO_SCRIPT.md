@@ -31,8 +31,8 @@ would (`app.ingestion.chunker`, `app.ingestion.embedder`).
 1. Login using the viewer credentials:
    * **Email**: `viewer@clearancerag.test`
    * **Password**: `viewer123`
-2. Notice the "Admin Upload" button is absent from the UI.
-3. In the chat input, ask: *"What is the CEO's total compensation for FY2025?"*
+2. Notice the "Admin Upload" button is absent from the UI, and the clearance badge in the header reads Viewer.
+3. Click the pre-filled suggestion chip for *"What is the maximum pallet stacking height?"* to show it works, then ask directly: *"What is the CEO's total compensation for FY2025?"*
 4. Observe the response: *"I do not have access to that information."*
 5. Open the **Sources Dropdown** to show it is completely empty.
 6. **Talking Point**: *"Because this user is a Viewer (level 0), the database physically filtered out the Admin chunks (level 2) during the vector scan. The LLM refused to answer not because it was prompted to hide it, but because the database never gave it the sensitive data in the first place. The security is enforced at the database layer."*

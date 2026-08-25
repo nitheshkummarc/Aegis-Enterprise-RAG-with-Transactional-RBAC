@@ -1,5 +1,6 @@
 import React, { useState } from "react";
-import { ChevronDown, ChevronRight, UploadCloud, Shield } from "lucide-react";
+import { ChevronDown, ChevronRight, UploadCloud, ShieldAlert, FileText } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 export type Source = {
   document_id: string;
@@ -18,48 +19,73 @@ export default function SourcesDropdown({ sources, userRole }: SourcesDropdownPr
   // If there are no sources, access was denied or nothing was found.
   if (!sources || sources.length === 0) {
     return (
-      <div className="mt-4 p-4 bg-red-950/30 border border-red-900 rounded-lg" data-testid="sources-empty">
-        <div className="flex items-center text-red-400 font-medium">
-          <Shield className="w-5 h-5 mr-2" />
-          No Permitted Sources Found
+      <div
+        className="mt-3 flex items-start gap-3 p-3.5 rounded-xl border border-rose-900/50 bg-rose-950/25 animate-fade-in"
+        data-testid="sources-empty"
+      >
+        <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-rose-500/15 shrink-0">
+          <ShieldAlert className="w-4 h-4 text-rose-400" />
         </div>
-        <p className="text-red-500 text-sm mt-1">
-          You do not have the required clearance level to access information for this query.
-        </p>
+        <div>
+          <p className="text-sm font-medium text-rose-300">No Permitted Sources Found</p>
+          <p className="text-xs text-rose-400/80 mt-0.5">
+            Your clearance level does not permit access to information for this query.
+          </p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="mt-4 border border-neutral-800 rounded-lg overflow-hidden bg-neutral-900" data-testid="sources-dropdown">
+    <div
+      className="mt-3 rounded-xl border border-neutral-800 overflow-hidden bg-neutral-900/60 animate-fade-in"
+      data-testid="sources-dropdown"
+    >
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full flex items-center justify-between p-3 bg-neutral-800 hover:bg-neutral-700 transition-colors"
+        className="w-full flex items-center justify-between p-3 hover:bg-neutral-800/60 transition-colors"
       >
-        <span className="font-medium text-neutral-200 flex items-center">
-          {isOpen ? <ChevronDown className="w-4 h-4 mr-2" /> : <ChevronRight className="w-4 h-4 mr-2" />}
+        <span className="text-xs font-medium text-neutral-300 flex items-center gap-1.5">
+          {isOpen ? (
+            <ChevronDown className="w-3.5 h-3.5 text-neutral-500" />
+          ) : (
+            <ChevronRight className="w-3.5 h-3.5 text-neutral-500" />
+          )}
           Sources ({sources.length})
         </span>
-        
+
         {/* Role-Conditional UI Element: Only visible to admins */}
         {userRole === "admin" && (
-          <span className="flex items-center text-xs font-semibold text-neutral-300 bg-neutral-700 px-2 py-1 rounded" data-testid="admin-upload-btn">
-            <UploadCloud className="w-3 h-3 mr-1" />
+          <span
+            className="flex items-center gap-1 text-[10px] font-semibold text-rose-300 bg-rose-500/10 border border-rose-500/20 px-2 py-1 rounded-md"
+            data-testid="admin-upload-btn"
+          >
+            <UploadCloud className="w-3 h-3" />
             Admin Upload
           </span>
         )}
       </button>
 
       {isOpen && (
-        <div className="p-3 border-t border-neutral-800" data-testid="sources-list">
-          <ul className="space-y-2">
-            {sources.map((source, idx) => (
-              <li key={idx} className="text-sm text-neutral-300 bg-neutral-800 p-2 rounded">
-                <span className="font-semibold text-neutral-100">{source.title}</span> 
-                <span className="text-xs text-neutral-500 ml-2">ID: {source.document_id.slice(0, 8)}...</span>
-              </li>
-            ))}
-          </ul>
+        <div
+          className="p-2.5 pt-0 border-t border-neutral-800/80 space-y-1.5"
+          data-testid="sources-list"
+        >
+          {sources.map((source, idx) => (
+            <div
+              key={source.chunk_id || idx}
+              className={cn(
+                "flex items-center gap-2.5 text-xs text-neutral-300 bg-neutral-800/40 hover:bg-neutral-800/70",
+                "p-2.5 rounded-lg border border-neutral-800 transition-colors"
+              )}
+            >
+              <FileText className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
+              <span className="font-medium text-neutral-100 truncate">{source.title}</span>
+              <span className="ml-auto text-[10px] text-neutral-600 font-mono shrink-0">
+                {source.document_id.slice(0, 8)}
+              </span>
+            </div>
+          ))}
         </div>
       )}
     </div>

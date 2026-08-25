@@ -17,6 +17,19 @@ in the app calls `createClient()` from either file. Auth doesn't go through
 Supabase Auth at all; only the backend talks to Supabase, and only for file
 storage.
 
+## Design
+
+Clearance level is color-coded consistently across the app — sky for
+viewer, amber for manager, rose for admin — defined once in
+[`src/lib/roles.ts`](src/lib/roles.ts) and reused by the login screen, the
+chat header badge, and the sources panel, so a role's color always means
+the same thing wherever it appears.
+
+The chat empty state shows role-specific example questions as clickable
+chips (also sourced from `roles.ts`) instead of a blank input — clicking
+one sends it immediately, which doubles as a live demo of what each
+clearance level can and can't see.
+
 ## Getting Started
 
 ```bash
@@ -51,4 +64,5 @@ npm test        # jest — component tests (src under tests/)
 - `src/app/` — App Router pages: `/login`, `/chat` (the SSE chat UI), and the NextAuth route handler under `api/auth/`.
 - `src/auth.ts` — NextAuth v5 config (credentials provider → backend `/auth/login`).
 - `src/lib/api.ts` — `fetchWithAuth`, the only place backend calls are made from.
+- `src/lib/roles.ts` — per-role display metadata (label, color, icon, sample prompts) shared by every page that shows a clearance level.
 - `src/components/SourcesDropdown.tsx` — renders the permitted sources returned by a query, or the "no permitted sources" refusal state. Its "Admin Upload" badge is a role-conditional visual cue, not a wired-up upload flow — there is no upload UI yet; document ingestion currently happens via the backend's `scripts/generate_synthetic_corpus.py` or direct API calls to `/documents/upload-url` + `/documents/confirm-upload`.
