@@ -144,7 +144,7 @@ def ingest_document(self, document_id: str, object_key: str) -> dict:
     1. Download PDF from Supabase Storage to a temp file
     2. PyMuPDF text extraction (fail-fast on corrupt PDF — no retries)
     3. Recursive chunking (500 chars, 50 overlap)
-    4. OpenAI embedding (retry with exponential backoff on rate limit)
+    4. Groq embedding (retry with exponential backoff on rate limit)
     5. Batch insert chunks into document_chunks with min_role_level from parent
     6. Update document status to 'ready'
     7. Delete the raw PDF from storage (dead weight after chunking)
@@ -171,7 +171,7 @@ def ingest_document(self, document_id: str, object_key: str) -> dict:
 
         # ------------------------------------------------------------------
         # Step 0: Idempotency — skip if chunks already exist
-        # Prevents duplicate OpenAI embedding charges on queue redelivery.
+        # Prevents duplicate Groq embedding charges on queue redelivery.
         # ------------------------------------------------------------------
         existing_count = db.execute(
             select(func.count()).where(DocumentChunk.document_id == doc.id)

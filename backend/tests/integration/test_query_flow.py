@@ -1,7 +1,7 @@
 """Integration tests for the /retrieval/query endpoint.
 
 Tests the SSE streaming response format and permission-filtered behavior.
-Since these tests mock the OpenAI API, they verify the integration logic
+Since these tests mock the embedding and generation calls, they verify the integration logic
 without requiring real API keys.
 """
 
@@ -21,6 +21,7 @@ from app.db.models import Base, User, UserRole, Document, DocumentChunk
 from app.core.security import hash_password
 from app.auth.jwt import create_access_token
 from app.config import EMBEDDING_DIMENSIONS
+from app.retrieval.generate import active_model_name
 
 
 @pytest.fixture()
@@ -161,7 +162,7 @@ class TestQueryEndpoint:
         def fake_generate(prompt):
             yield {"type": "token", "text": "PTO is "}
             yield {"type": "token", "text": "15 days."}
-            yield {"type": "done", "full_response": "PTO is 15 days.", "usage": {}, "model": "gpt-4o-mini"}
+            yield {"type": "done", "full_response": "PTO is 15 days.", "usage": {}, "model": active_model_name()}
 
         mock_generate.side_effect = fake_generate
 
@@ -206,7 +207,7 @@ class TestQueryEndpoint:
 
         def fake_generate(prompt):
             yield {"type": "token", "text": "Answer."}
-            yield {"type": "done", "full_response": "Answer.", "usage": {}, "model": "gpt-4o-mini"}
+            yield {"type": "done", "full_response": "Answer.", "usage": {}, "model": active_model_name()}
 
         mock_generate.side_effect = fake_generate
 
@@ -242,7 +243,7 @@ class TestQueryEndpoint:
 
         def fake_generate(prompt):
             yield {"type": "token", "text": "I do not have access to that information."}
-            yield {"type": "done", "full_response": "I do not have access to that information.", "usage": {}, "model": "gpt-4o-mini"}
+            yield {"type": "done", "full_response": "I do not have access to that information.", "usage": {}, "model": active_model_name()}
 
         mock_generate.side_effect = fake_generate
 
@@ -283,7 +284,7 @@ class TestQueryEndpoint:
 
         def failing_generate(prompt):
             yield {"type": "token", "text": "PTO is "}
-            raise RuntimeError("OpenAI connection reset mid-stream")
+            raise RuntimeError("Groq connection reset mid-stream")
 
         mock_generate.side_effect = failing_generate
 
@@ -331,7 +332,7 @@ class TestQueryRateLimit:
                 "type": "done",
                 "full_response": "",
                 "usage": {},
-                "model": "gpt-4o-mini",
+                "model": active_model_name(),
             }
 
         mock_generate.side_effect = fake_generate

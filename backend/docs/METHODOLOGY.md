@@ -124,7 +124,7 @@ condition, because it proves no chunk was ever fetched to leak.
 ### Latency reporting
 
 Retrieval latency is **DB-only**. The embedding call is deliberately outside
-the timer, because mixing a network round-trip to OpenAI into a metric labelled
+the timer, because mixing a network round-trip to the embedding provider into a metric labelled
 "retrieval latency" would misattribute a third-party API's variance to the
 pgvector query. Average and p95 are both reported; an average alone hides the
 tail that actually matters.

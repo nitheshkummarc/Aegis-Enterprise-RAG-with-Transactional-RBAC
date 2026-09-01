@@ -1,9 +1,9 @@
 """Groq generation via LangChain, with streaming support.
 
 The model is selected by ``GROQ_MODEL`` and resolved once per process. There
-is deliberately no provider toggle and no OpenAI branch: the OpenAI SDK is
-still a dependency of this project, but only for embeddings — nothing in this
-module imports it.
+is deliberately no provider toggle and no OpenAI branch. Embeddings run on
+Groq too (see app.ingestion.embedder), so the project needs exactly one
+provider credential, GROQ_API_KEY.
 
 Authorization note
 ------------------

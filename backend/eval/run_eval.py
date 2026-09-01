@@ -406,7 +406,7 @@ def run_evaluation():
             "retrieval_latency": {
                 "avg_ms": round(avg_lat, 2),
                 "p95_ms": round(p95_lat, 2),
-                "note": "DB-only: real pgvector <=> query time, excludes the OpenAI embedding call",
+                "note": "DB-only: real pgvector <=> query time, excludes the Groq embedding call",
             },
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "total_questions": len(golden_dataset),
