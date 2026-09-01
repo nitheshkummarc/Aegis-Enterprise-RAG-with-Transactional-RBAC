@@ -20,3 +20,19 @@ class ForbiddenException(HTTPException):
             status_code=status.HTTP_403_FORBIDDEN,
             detail=detail,
         )
+
+
+class ConfigurationError(RuntimeError):
+    """Raised when the process is misconfigured in a way that cannot be
+    recovered from at runtime — a missing required credential, a blank
+    model name, or an installed SDK whose API no longer matches the code
+    calling it.
+
+    Deliberately NOT an HTTPException: these are server-side deployment
+    faults, not client errors, and they must surface loudly rather than be
+    translated into a tidy 4xx. Nothing in the codebase may catch this
+    broadly. It exists because the opposite policy — a bare
+    ``except Exception`` around optional setup — is exactly how the
+    Langfuse v2/v4 API mismatch stayed invisible for months while every
+    trace span in the query path was silently skipped.
+    """
