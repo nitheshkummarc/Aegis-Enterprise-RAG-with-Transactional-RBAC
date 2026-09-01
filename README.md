@@ -48,7 +48,7 @@ LIMIT 3;
 | **Vector Index** | HNSW (`vector_cosine_ops`), one cumulative partial index per role level | Sub-millisecond retrieval latency; the per-role split keeps a viewer's search from ever ANN-scanning admin-only chunks. |
 | **Async Queue** | Celery + Redis | Decouples heavy PDF parsing/embedding from the HTTP request lifecycle. |
 | **Generation** | LangChain `ChatGroq` → Groq (`openai/gpt-oss-120b`, or `qwen/qwen3.6-27b`) | The model is a config value (`GROQ_MODEL`), not a hardcoded SDK call, so swapping candidates is a restart rather than a code change. LangChain wraps **generation only** — never retrieval, which would move authorization out of SQL. |
-| **Embeddings** | Groq `nomic-embed-text-v1_5` (OpenAI-compatible endpoint) | One provider, one API key for the whole system. The `openai` package is reused as a generic protocol client pointed at Groq — not a dependency on an OpenAI account. |
+| **Embeddings** | OpenAI `text-embedding-3-small` (1536-dim) | Groq serves no embedding model, so embeddings stay on OpenAI. Model ID and vector width are set by `EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS`. |
 | **Observability** | Langfuse (Cloud, v4 SDK) | End-to-end tracing of retrieval latency, token costs, and RBAC enforcement. The generation span is reported by LangChain's callback; retrieval is instrumented by hand. |
 
 ---
@@ -57,7 +57,7 @@ LIMIT 3;
 
 - **🔒 Database-Layer RBAC:** Row-level permission filtering via SQL `WHERE` clauses, eliminating application-layer authorization bugs.
 - **🛡️ Enterprise Security Hardening:** Strict Pydantic models (`extra="forbid"`) to prevent mass assignment, `slowapi` rate-limiting on auth endpoints to prevent credential stuffing, JWT algorithm pinning, and extensive `.gitignore` isolation.
-- **⚡ Async Ingestion Pipeline:** Celery workers with isolated DB sessions handle table-aware PyMuPDF extraction (detected tables are rendered as markdown so rows/columns survive parsing) and Groq embedding — transient storage failures retry automatically, while corrupt PDFs and extraction errors fail fast with no retry. A periodic cleanup task dead-letters any document orphaned mid-upload.
+- **⚡ Async Ingestion Pipeline:** Celery workers with isolated DB sessions handle table-aware PyMuPDF extraction (detected tables are rendered as markdown so rows/columns survive parsing) and OpenAI embedding — transient storage failures retry automatically, while corrupt PDFs and extraction errors fail fast with no retry. A periodic cleanup task dead-letters any document orphaned mid-upload.
 - **📊 Adversarial Evaluation Harness:** Runs the golden dataset through the real `/retrieval/query` endpoint — real embeddings, real pgvector search, real LLM generation — including SQL injection payloads, malformed JWTs, and privilege escalation attempts, scored against the model's actual output rather than the retrieved chunks alone.
 - **📈 Hard Performance Metrics:** Instrumented to measure and report p95 database retrieval latency for the permission-filtered query.
 - **👁️ End-to-End Observability:** Langfuse (v4) traces every query — a root span carrying user and role, a hand-instrumented retrieval span recording the role level used in the `WHERE` clause, and a generation span reported by LangChain's own callback.
@@ -69,7 +69,8 @@ LIMIT 3;
 
 ### Prerequisites
 - Docker & Docker Compose
-- **A Groq API key** (`GROQ_API_KEY`, free tier) — the only provider credential needed; it covers both generation and embeddings
+- **A Groq API key** (`GROQ_API_KEY`, free tier) — text generation
+- **An OpenAI API key** (`OPENAI_API_KEY`) — embeddings; the project must have `text-embedding-3-small` enabled under Project → Limits → Model access
 - (Optional) Langfuse Cloud keys for observability
 
 > **Before first seeding**, confirm the embedding width matches the schema:
@@ -141,7 +142,7 @@ To maintain architectural purity and focus on the Transactional RBAC thesis, spe
 3. **No Multi-Agent Orchestration:** The pipeline is linear and deterministic — `embed → permission-filtered search → generate`. Adopting LangChain for generation did **not** introduce chains, agents, routers or tool calling: every branch in an authorization-sensitive path is a branch that has to be audited. *Cost: no query rewriting, no multi-hop retrieval, no self-correction.*
 4. **LangChain Wraps Generation Only:** The idiomatic LangChain RAG pattern (`create_retrieval_chain` over a filtered `as_retriever`) is deliberately rejected, because it would express the role filter as a framework kwarg — moving authorization out of the database and one refactor away from not being applied. *Cost: Aegis forgoes LangChain's retrieval ecosystem and hand-writes what it needs.*
 5. **Ordered Clearance Levels Only:** `min_role_level` assumes a totally ordered model. Genuinely orthogonal roles — "Finance" and "Engineering" as peers rather than levels — do not fit an integer comparison and would require a real change, not a bigger number.
-6. **Single Provider, Undocumented Endpoint:** Generation and embeddings both run on Groq, so the system needs one key. Groq's embeddings endpoint responds but is **absent from its public API reference**, so it carries more stability risk than a documented one. *Cost: a provider-side change there breaks ingestion and query with no deprecation notice.*
+6. **Two Providers:** Generation runs on Groq, embeddings on OpenAI, because Groq serves no embedding model (verified against its live catalog). *Cost: two API keys and two vendor dependencies.*
 
 **Full reasoning, rejected alternatives, and the cost of each decision are recorded in [`docs/ENGINEERING_DECISIONS.md`](backend/docs/ENGINEERING_DECISIONS.md).**
 

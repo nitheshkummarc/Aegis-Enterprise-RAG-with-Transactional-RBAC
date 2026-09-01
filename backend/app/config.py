@@ -5,23 +5,6 @@ from pydantic import model_validator
 from functools import lru_cache
 
 
-# Width of the vectors GROQ_EMBEDDING_MODEL produces, and therefore the width
-# of the pgvector column, the ORM type, and every fixture that builds a fake
-# vector. It is a module constant rather than a Settings field on purpose:
-# changing it is a schema change requiring a rebuild, not something an
-# environment variable may quietly disagree with the database about.
-#
-# THIS VALUE MUST MATCH THE MODEL'S REAL OUTPUT. It has NOT been confirmed
-# against a live Groq call yet — nomic-embed-text-v1.5 is natively 768-wide
-# and supports Matryoshka truncation, and Groq's hosted copy may or may not
-# expose that. Run `python -m scripts.verify_embedding_dimensions` once a
-# GROQ_API_KEY is available; it measures the real width and tells you what to
-# put here. `verify_embedding_dimensions()` in app.ingestion.embedder enforces
-# the match at runtime so a wrong value can never silently build a corpus the
-# database will reject.
-EMBEDDING_DIMENSIONS = 768
-
-
 class Settings(BaseSettings):
     """Aegis application settings.
     
@@ -35,25 +18,22 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
     
-    # Groq — the only model provider. One key covers both generation and
-    # embeddings; there is no OpenAI account dependency anywhere in the tree.
-    #
-    # GROQ_MODEL selects which chat model the whole process serves. It is
-    # resolved once at startup through the lru_cached get_settings(), so
-    # switching models means restarting the process — which is fine: the eval
-    # harness runs as a fresh process per invocation.
-    #
-    # Re-verify both IDs against Groq's live catalog before relying on them.
-    # That catalog churns, and llama-3.3-70b-versatile was already retired
-    # from the free tier out from under this project once.
-    GROQ_MODEL: str = "openai/gpt-oss-120b"
-    GROQ_EMBEDDING_MODEL: str = "nomic-embed-text-v1_5"
+    # Groq generation. Model IDs are supplied by the environment; no default
+    # is defined in code so that the running model is always explicit.
+    # Resolved once at startup — changing a model requires a restart.
+    GROQ_MODEL: str = ""
     GROQ_API_KEY: str = ""
 
-    # Groq speaks the OpenAI wire protocol, so the `openai` package is reused
-    # as a generic HTTP client pointed here. That is a protocol choice, not a
-    # dependency on an OpenAI account.
+    # Base URL for Groq's OpenAI-compatible API.
     GROQ_API_BASE: str = "https://api.groq.com/openai/v1"
+
+    # Embeddings (OpenAI). EMBEDDING_DIMENSIONS determines the pgvector
+    # column size, the ORM column type, and test fixtures, so it must match
+    # the model's actual output width. Verify with
+    # `python -m scripts.verify_embedding_dimensions`.
+    OPENAI_API_KEY: str = ""
+    EMBEDDING_MODEL: str = ""
+    EMBEDDING_DIMENSIONS: int = 0
     
     # JWT
     JWT_SECRET_KEY: str = "change-me-to-a-random-secret"
@@ -100,11 +80,9 @@ class Settings(BaseSettings):
                     "brute-force attacks against the HMAC-SHA256 signature."
                 )
             if not self.GROQ_API_KEY:
-                raise ValueError(
-                    "GROQ_API_KEY must be set in production. It is the only "
-                    "provider credential the system needs — it covers both "
-                    "generation and embeddings."
-                )
+                raise ValueError("GROQ_API_KEY must be set in production (generation).")
+            if not self.OPENAI_API_KEY:
+                raise ValueError("OPENAI_API_KEY must be set in production (embeddings).")
         return self
 
 
@@ -112,3 +90,25 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Cached settings instance."""
     return Settings()
+
+
+def embedding_dimensions() -> int:
+    """Return the configured embedding vector width.
+
+    Raises:
+        ValueError: If EMBEDDING_DIMENSIONS is unset or non-positive.
+    """
+    dims = get_settings().EMBEDDING_DIMENSIONS
+    if dims <= 0:
+        raise ValueError(
+            "EMBEDDING_DIMENSIONS is not set. It must equal the output width "
+            "of EMBEDDING_MODEL. Determine it with "
+            "`python -m scripts.verify_embedding_dimensions` and set it in "
+            "backend/.env."
+        )
+    return dims
+
+
+# Resolved at import so schema definitions and test fixtures can use a plain
+# int. The column width is fixed for the lifetime of the process.
+EMBEDDING_DIMENSIONS: int = embedding_dimensions()

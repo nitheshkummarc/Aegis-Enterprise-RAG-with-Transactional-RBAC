@@ -23,16 +23,10 @@ class ForbiddenException(HTTPException):
 
 
 class ConfigurationError(RuntimeError):
-    """Raised when the process is misconfigured in a way that cannot be
-    recovered from at runtime — a missing required credential, a blank
-    model name, or an installed SDK whose API no longer matches the code
-    calling it.
+    """Raised when the process is misconfigured and cannot recover at runtime.
 
-    Deliberately NOT an HTTPException: these are server-side deployment
-    faults, not client errors, and they must surface loudly rather than be
-    translated into a tidy 4xx. Nothing in the codebase may catch this
-    broadly. It exists because the opposite policy — a bare
-    ``except Exception`` around optional setup — is exactly how the
-    Langfuse v2/v4 API mismatch stayed invisible for months while every
-    trace span in the query path was silently skipped.
+    Covers missing credentials, unset model identifiers, and installed SDKs
+    whose API does not match the calling code. Not an HTTPException: these are
+    server-side deployment faults rather than client errors, and should not be
+    translated into a 4xx response.
     """

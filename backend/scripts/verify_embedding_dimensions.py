@@ -1,17 +1,12 @@
-"""Measure the real output width of the configured Groq embedding model.
+"""Check the configured embedding model's output width.
 
     cd backend
     python -m scripts.verify_embedding_dimensions
 
-``EMBEDDING_DIMENSIONS`` in ``app/config.py`` fixes the pgvector column width.
-It must equal what the model actually returns — a documented figure is not
-good enough, because a hosted copy of a model may truncate (nomic-embed-text
-supports Matryoshka widths from 64 to 768) or may not expose that behavior at
-all. This script settles it with one live call and prints exactly what to
-change if the configured value is wrong.
-
-Run it once when a GROQ_API_KEY is first issued, and again whenever
-GROQ_EMBEDDING_MODEL changes.
+EMBEDDING_DIMENSIONS determines the pgvector column width, so it must equal
+the width the model actually returns. This script makes one embedding request
+and reports whether the configured value matches, along with the files to
+update if it does not.
 """
 
 import sys
@@ -20,11 +15,10 @@ from app.config import EMBEDDING_DIMENSIONS
 from app.core.exceptions import ConfigurationError
 from app.ingestion.embedder import embed_query, embedding_model_name
 
-# Files carrying the width as a literal, which must be edited together.
+# Locations that must be updated together when the width changes.
 _LITERAL_SITES = (
-    "app/config.py            EMBEDDING_DIMENSIONS",
+    "backend/.env             EMBEDDING_DIMENSIONS",
     "app/db/schema.sql        embedding vector(...)",
-    "app/db/migrations/versions/001_initial_schema.py   embedding VECTOR(...)",
 )
 
 
@@ -35,7 +29,7 @@ def main() -> int:
         print(f"FAIL: {exc}")
         return 2
 
-    print(f"Probing '{model}' at Groq's OpenAI-compatible endpoint...")
+    print(f"Requesting an embedding from '{model}'...")
 
     try:
         vector = embed_query("dimension probe")

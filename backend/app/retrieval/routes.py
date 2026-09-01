@@ -51,19 +51,12 @@ def _sse_event(data: dict) -> str:
 
 
 def _start_query_trace(user: User, question: str):
-    """Open the root observation for one RAG query, or return ``None``.
+    """Open the root Langfuse observation for a query, or return None.
 
-    Created with the non-context-manager API on purpose. The SSE generator
-    runs *after* this handler returns, potentially on a different worker
-    thread, so the root span must outlive this frame. Holding an OpenTelemetry
-    context open across that boundary would risk detaching it from the wrong
-    thread; an explicit span object has no such coupling and is ended by the
-    generator instead.
-
-    ``propagate_attributes`` is the v4 replacement for the removed
-    ``langfuse.trace(user_id=...)`` argument. It applies to spans created
-    inside its block, so entering it just long enough to create the root span
-    is what puts user and role on the trace.
+    Uses the non-context-manager API because the SSE generator runs after this
+    handler returns, possibly on another thread; the span is ended there.
+    propagate_attributes applies user and role to spans created inside its
+    block.
     """
     client = get_langfuse_client()
     if client is None:
@@ -84,12 +77,10 @@ def _start_query_trace(user: User, question: str):
 
 @contextmanager
 def _retrieval_span(root, user: User):
-    """Time the permission-filtered SQL search as its own observation.
+    """Record the permission-filtered search as a retriever observation.
 
-    Retrieval is hand-instrumented because it is a raw pgvector query, not a
-    LangChain operation — there is no callback that could report it. It is
-    also the span that documents the authorization boundary, so the role and
-    the resolved role level are recorded here.
+    Instrumented manually because a pgvector query is not a LangChain
+    operation. Records the role and resolved role level used by the filter.
     """
     if root is None:
         yield None
@@ -111,17 +102,11 @@ def _retrieval_span(root, user: User):
 
 @contextmanager
 def _generation_span(root, prompt: str):
-    """Make the generation the current observation while the LLM streams.
+    """Make the generation the current observation while the model streams.
 
-    Unlike the retrieval span this one is only a container: it is entered as
-    the *current* context so that the Langfuse LangChain callback attached in
-    the generation layer nests its own generation observation underneath,
-    reporting model, prompt, completion and token usage on its own. That
-    callback is what replaces the hand-rolled span the previous
-    implementation tried, and failed, to create.
-
-    Entered and exited entirely inside the SSE generator, so the OTEL context
-    is attached and detached on the same thread.
+    Entered as the current OpenTelemetry context so the Langfuse LangChain
+    callback nests its generation observation underneath. Entered and exited
+    within the SSE generator so the context stays on one thread.
     """
     if root is None:
         yield None
@@ -145,9 +130,8 @@ async def query(
 ):
     """Embed user query → permission-filtered search → LLM generation → SSE stream.
 
-    Rate-limited like the other cost-sensitive routes (auth, upload-url) —
-    each call spends a Groq embedding request and a Groq generation request,
-    both against the same metered quota.
+    Rate-limited like the other cost-sensitive routes (auth, upload-url):
+    each call spends one embedding request and one generation request.
     """
     question = body.question
 
@@ -161,10 +145,10 @@ async def query(
     try:
         query_embedding = embed_query(question)
     except openai.APIError as e:
-        # Provider fault (tier 3): transient and worth retrying from the
-        # client's side. ConfigurationError is deliberately NOT caught here —
-        # a missing GROQ_API_KEY is not something a user can retry past.
-        logger.error("Groq embedding failed: %s", e)
+        # Provider errors are transient and retryable. ConfigurationError is
+        # not caught here, so misconfiguration surfaces rather than appearing
+        # as a temporary failure.
+        logger.error("Embedding request failed: %s", e)
         raise HTTPException(
             status_code=502,
             detail="Failed to generate query embedding. Please try again.",
@@ -227,11 +211,8 @@ async def query(
                                 "sources": sources,
                             })
                 except ConfigurationError:
-                    # Tier 1: the process is misconfigured (no GROQ_API_KEY, no
-                    # GROQ_MODEL). Not recoverable and not the user's problem to
-                    # retry — surface it instead of masking it as a transient
-                    # "generation failed", which is how the Langfuse breakage
-                    # stayed invisible.
+                    # Misconfiguration is not retryable; surface it rather
+                    # than reporting a transient generation failure.
                     raise
                 except Exception as e:
                     logger.error("Generation error: %s", e)
@@ -255,10 +236,9 @@ async def query(
                         },
                     )
         finally:
-            # The root span outlives the handler, so the generator owns
-            # closing it. No explicit flush: the v4 client batches on a
-            # background interval and flushes via its atexit hook, and a
-            # blocking per-request flush would stall the response.
+            # The root span outlives the handler, so the generator closes it.
+            # No explicit flush: the client batches in the background and
+            # flushes on process exit.
             if root_span is not None:
                 root_span.update(output=full_response)
                 root_span.end()

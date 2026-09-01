@@ -50,6 +50,11 @@ jobs:
       REDIS_URL: redis://localhost:6379/0
       JWT_SECRET_KEY: ci-test-secret-key-not-for-production-use
       ENVIRONMENT: development
+      # Model identifiers have no code default and must be supplied. No
+      # provider API keys: the suite mocks all provider calls.
+      GROQ_MODEL: openai/gpt-oss-120b
+      EMBEDDING_MODEL: text-embedding-3-small
+      EMBEDDING_DIMENSIONS: 1536
 
     defaults:
       run:

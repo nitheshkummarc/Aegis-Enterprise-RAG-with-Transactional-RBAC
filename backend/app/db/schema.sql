@@ -57,10 +57,8 @@ CREATE TABLE IF NOT EXISTS document_chunks (
     document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     chunk_index INTEGER NOT NULL,
     text_content TEXT NOT NULL,
-    -- Width must equal EMBEDDING_DIMENSIONS in app/config.py, which must
-    -- equal the real output width of GROQ_EMBEDDING_MODEL. Verify with
-    -- `python -m scripts.verify_embedding_dimensions`.
-    embedding vector(768) NOT NULL,
+    -- Width must equal EMBEDDING_DIMENSIONS in the environment.
+    embedding vector(1536) NOT NULL,
     min_role_level SMALLINT NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
 

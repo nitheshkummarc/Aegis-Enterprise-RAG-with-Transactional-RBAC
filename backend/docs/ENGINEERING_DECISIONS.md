@@ -282,11 +282,13 @@ Things not yet decided, recorded so they are not mistaken for settled.
     deployment's actual policy shape.
 *   **Clearance changes after ingestion.** Re-stamping every chunk of a
     reclassified document is understood but not implemented.
-*   **Embedding quality across the provider swap is unmeasured.**
-    `nomic-embed-text-v1_5` is a different model from the `text-embedding-3-small`
-    it replaced and may retrieve a different top-k for the same query. If
-    faithfulness moves, inspect `sources[]` before blaming the chat model.
-*   **Groq's embeddings endpoint is undocumented.** It responds (401 rather
-    than 404, unlike a nonexistent path), and the SDK exposes it, but it is
-    absent from the public API reference — so its stability carries more risk
-    than a documented endpoint would.
+*   **Embeddings stay on OpenAI.** Generation moved to Groq; embeddings did
+    not, because Groq serves no embedding model. Verified against the live
+    catalog: the account lists 14 models, none of them embedding models, and
+    `nomic-embed-text-v1_5` returns 404. The system therefore depends on two
+    providers, and `text-embedding-3-small`'s 1536-dimension output is fixed
+    in the schema and the indexes.
+*   **Embedding model access is account-gated.** `text-embedding-3-small`
+    returned 403 (`project does not have access to model`) until enabled on
+    the OpenAI project. Availability is a per-project setting, not a property
+    of the key.

@@ -13,6 +13,8 @@ from typing import Sequence, Union
 
 from alembic import op
 
+from app.config import EMBEDDING_DIMENSIONS
+
 # revision identifiers, used by Alembic.
 revision: str = "001"
 down_revision: Union[str, None] = None
@@ -59,14 +61,13 @@ def upgrade() -> None:
     op.execute("CREATE INDEX documents_uploaded_by_idx ON documents(uploaded_by);")
 
     # Document chunks table with denormalized min_role_level
-    op.execute("""
+    op.execute(f"""
         CREATE TABLE document_chunks (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
             chunk_index INT NOT NULL,
             text_content TEXT NOT NULL,
-            -- Must equal EMBEDDING_DIMENSIONS in app/config.py.
-            embedding VECTOR(768) NOT NULL,
+            embedding VECTOR({EMBEDDING_DIMENSIONS}) NOT NULL,
             min_role_level SMALLINT NOT NULL CHECK (min_role_level BETWEEN 0 AND 2),
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             UNIQUE (document_id, chunk_index)
