@@ -19,7 +19,7 @@ Every question is run against the real pipeline:
     using a real OpenAI query embedding (this is what retrieval_latency
     measures — DB time only, embedding excluded from the timer)
   - /retrieval/query is called end-to-end through the real FastAPI app
-    (real embedding, real SQL, real gpt-4o-mini generation), and scoring
+    (real embedding, real SQL, real Groq generation on GROQ_MODEL), and scoring
     is done against the LLM's actual generated text — including checking
     that boundary/refusal cases produce the exact required refusal string,
     not just that the SQL filter withheld chunks.
@@ -45,6 +45,7 @@ from app.db.session import get_engine
 from app.db.models import User, UserRole, Document, DocumentChunk
 from app.auth.jwt import create_access_token  # THE backend's JWT logic
 from app.retrieval.search import get_role_level, permission_filtered_search
+from app.retrieval.generate import active_model_name  # report the model that actually ran
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -185,7 +186,7 @@ def _parse_sse(response_text: str) -> dict:
 
 def run_real_query_endpoint(client: TestClient, token: str, question: str) -> dict:
     """Call the real /retrieval/query endpoint end-to-end: real embedding,
-    real SQL search, real gpt-4o-mini generation, real SSE stream."""
+    real SQL search, real Groq generation, real SSE stream."""
     resp = client.post(
         "/retrieval/query",
         json={"question": question},
@@ -400,6 +401,7 @@ def run_evaluation():
         p95_lat = latencies[min(p95_idx, len(latencies) - 1)] if latencies else 0
 
         summary = {
+            "generation_model": active_model_name(),
             "retrieval_latency": {
                 "avg_ms": round(avg_lat, 2),
                 "p95_ms": round(p95_lat, 2),
@@ -473,13 +475,14 @@ def _generate_markdown_report(summary: dict, results: list[dict]):
         "This report is produced by running every golden-dataset question",
         "through the real `/retrieval/query` endpoint — real OpenAI",
         "embedding, real `permission_filtered_search` against pgvector,",
-        "real `gpt-4o-mini` generation — and scoring against the model's",
-        "actual generated answer, not the retrieved chunk text.",
+        f"real `{active_model_name()}` generation on Groq — and scoring against",
+        "the model's actual generated answer, not the retrieved chunk text.",
         "",
         "## Summary",
         "",
         "| Metric | Value |",
         "|---|---|",
+        f"| Generation Model | `{summary.get('generation_model', 'unknown')}` |",
         f"| Total Questions | {summary['total_questions']} |",
         f"| Permission Compliance | {summary['permission_compliance']['pass_rate']} ({summary['permission_compliance']['passed']}/{summary['permission_compliance']['total']}) |",
         f"| Boundary Cases | {summary['boundary_cases']['pass_rate']} ({summary['boundary_cases']['passed']}/{summary['boundary_cases']['total']}) |",
