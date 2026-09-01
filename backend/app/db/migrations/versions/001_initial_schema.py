@@ -65,7 +65,8 @@ def upgrade() -> None:
             document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
             chunk_index INT NOT NULL,
             text_content TEXT NOT NULL,
-            embedding VECTOR(1536) NOT NULL,
+            -- Must equal EMBEDDING_DIMENSIONS in app/config.py.
+            embedding VECTOR(768) NOT NULL,
             min_role_level SMALLINT NOT NULL CHECK (min_role_level BETWEEN 0 AND 2),
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             UNIQUE (document_id, chunk_index)

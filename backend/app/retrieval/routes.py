@@ -25,11 +25,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user
-from app.config import get_settings
 from app.core.exceptions import ConfigurationError
 from app.core.limiter import limiter
 from app.db.models import User, ROLE_LEVEL_MAP
 from app.db.session import get_db
+from app.ingestion.embedder import embed_query
 from app.retrieval.prompt import build_prompt
 from app.retrieval.search import permission_filtered_search
 from app.core.observability import get_client as get_langfuse_client
@@ -146,10 +146,9 @@ async def query(
     """Embed user query → permission-filtered search → LLM generation → SSE stream.
 
     Rate-limited like the other cost-sensitive routes (auth, upload-url) —
-    each call spends an OpenAI embedding request and a Groq generation
-    request, both against metered quotas.
+    each call spends a Groq embedding request and a Groq generation request,
+    both against the same metered quota.
     """
-    settings = get_settings()
     question = body.question
 
     # Root observation for this query. None when Langfuse is unconfigured;
@@ -160,14 +159,12 @@ async def query(
     # Step 1: Embed the user's question
     # ------------------------------------------------------------------
     try:
-        client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
-        embed_response = client.embeddings.create(
-            model="text-embedding-3-small",
-            input=question,
-        )
-        query_embedding = embed_response.data[0].embedding
+        query_embedding = embed_query(question)
     except openai.APIError as e:
-        logger.error("OpenAI embedding failed: %s", e)
+        # Provider fault (tier 3): transient and worth retrying from the
+        # client's side. ConfigurationError is deliberately NOT caught here —
+        # a missing GROQ_API_KEY is not something a user can retry past.
+        logger.error("Groq embedding failed: %s", e)
         raise HTTPException(
             status_code=502,
             detail="Failed to generate query embedding. Please try again.",

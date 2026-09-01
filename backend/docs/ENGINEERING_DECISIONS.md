@@ -282,6 +282,11 @@ Things not yet decided, recorded so they are not mistaken for settled.
     deployment's actual policy shape.
 *   **Clearance changes after ingestion.** Re-stamping every chunk of a
     reclassified document is understood but not implemented.
-*   **Embeddings remain on OpenAI.** Generation moved to Groq; embeddings did
-    not. The system depends on two providers, and `text-embedding-3-small`'s
-    1536-dimension geometry is baked into the schema and the indexes.
+*   **Embedding quality across the provider swap is unmeasured.**
+    `nomic-embed-text-v1_5` is a different model from the `text-embedding-3-small`
+    it replaced and may retrieve a different top-k for the same query. If
+    faithfulness moves, inspect `sources[]` before blaming the chat model.
+*   **Groq's embeddings endpoint is undocumented.** It responds (401 rather
+    than 404, unlike a nonexistent path), and the SDK exposes it, but it is
+    absent from the public API reference — so its stability carries more risk
+    than a documented endpoint would.

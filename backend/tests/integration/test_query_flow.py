@@ -20,6 +20,7 @@ from app.db.session import get_db
 from app.db.models import Base, User, UserRole, Document, DocumentChunk
 from app.core.security import hash_password
 from app.auth.jwt import create_access_token
+from app.config import EMBEDDING_DIMENSIONS
 
 
 @pytest.fixture()
@@ -69,7 +70,7 @@ def query_db():
         document_id=viewer_doc.id,
         chunk_index=0,
         text_content="The PTO policy is 15 days per year for all employees.",
-        embedding=[0.1] * 1536,
+        embedding=[0.1] * EMBEDDING_DIMENSIONS,
         min_role_level=0,
     )
     session.add(viewer_chunk)
@@ -88,7 +89,7 @@ def query_db():
         document_id=admin_doc.id,
         chunk_index=0,
         text_content="CEO salary is $5M with stock options.",
-        embedding=[0.9] * 1536,
+        embedding=[0.9] * EMBEDDING_DIMENSIONS,
         min_role_level=2,
     )
     session.add(admin_chunk)
@@ -134,19 +135,15 @@ def _parse_sse_events(response_text: str) -> list[dict]:
 class TestQueryEndpoint:
     """Integration tests for POST /retrieval/query."""
 
-    @patch("app.retrieval.routes.openai")
+    @patch("app.retrieval.routes.embed_query")
     @patch("app.retrieval.routes.generate_streaming")
     @patch("app.retrieval.routes.permission_filtered_search")
     def test_sse_done_event_has_sources(
-        self, mock_search, mock_generate, mock_openai, query_client, query_db
+        self, mock_search, mock_generate, mock_embed, query_client, query_db
     ):
         """The final SSE event must be type=done with a sources array."""
         # Mock embedding
-        mock_embed_response = MagicMock()
-        mock_embed_response.data = [MagicMock(embedding=[0.1] * 1536)]
-        mock_openai.OpenAI.return_value.embeddings.create.return_value = (
-            mock_embed_response
-        )
+        mock_embed.return_value = [0.1] * EMBEDDING_DIMENSIONS
 
         # Mock search results
         mock_search.return_value = [
@@ -187,18 +184,14 @@ class TestQueryEndpoint:
         assert "sources" in done_event
         assert isinstance(done_event["sources"], list)
 
-    @patch("app.retrieval.routes.openai")
+    @patch("app.retrieval.routes.embed_query")
     @patch("app.retrieval.routes.generate_streaming")
     @patch("app.retrieval.routes.permission_filtered_search")
     def test_sse_done_sources_has_correct_fields(
-        self, mock_search, mock_generate, mock_openai, query_client, query_db
+        self, mock_search, mock_generate, mock_embed, query_client, query_db
     ):
         """Each source in the done event must have document_id, title, chunk_id."""
-        mock_embed_response = MagicMock()
-        mock_embed_response.data = [MagicMock(embedding=[0.1] * 1536)]
-        mock_openai.OpenAI.return_value.embeddings.create.return_value = (
-            mock_embed_response
-        )
+        mock_embed.return_value = [0.1] * EMBEDDING_DIMENSIONS
 
         mock_search.return_value = [
             {
@@ -235,18 +228,14 @@ class TestQueryEndpoint:
             assert "title" in source
             assert "chunk_id" in source
 
-    @patch("app.retrieval.routes.openai")
+    @patch("app.retrieval.routes.embed_query")
     @patch("app.retrieval.routes.generate_streaming")
     @patch("app.retrieval.routes.permission_filtered_search")
     def test_empty_sources_when_no_chunks_permitted(
-        self, mock_search, mock_generate, mock_openai, query_client, query_db
+        self, mock_search, mock_generate, mock_embed, query_client, query_db
     ):
         """When no chunks are permitted, sources should be empty."""
-        mock_embed_response = MagicMock()
-        mock_embed_response.data = [MagicMock(embedding=[0.1] * 1536)]
-        mock_openai.OpenAI.return_value.embeddings.create.return_value = (
-            mock_embed_response
-        )
+        mock_embed.return_value = [0.1] * EMBEDDING_DIMENSIONS
 
         # No chunks returned by search (viewer asking about admin-only content)
         mock_search.return_value = []
@@ -271,19 +260,15 @@ class TestQueryEndpoint:
         assert done_event["type"] == "done"
         assert done_event["sources"] == []
 
-    @patch("app.retrieval.routes.openai")
+    @patch("app.retrieval.routes.embed_query")
     @patch("app.retrieval.routes.generate_streaming")
     @patch("app.retrieval.routes.permission_filtered_search")
     def test_generation_failure_emits_error_and_keeps_real_sources(
-        self, mock_search, mock_generate, mock_openai, query_client, query_db
+        self, mock_search, mock_generate, mock_embed, query_client, query_db
     ):
         """A mid-stream generation exception emits an "error" event, and
         the trailing done event still carries the permitted sources."""
-        mock_embed_response = MagicMock()
-        mock_embed_response.data = [MagicMock(embedding=[0.1] * 1536)]
-        mock_openai.OpenAI.return_value.embeddings.create.return_value = (
-            mock_embed_response
-        )
+        mock_embed.return_value = [0.1] * EMBEDDING_DIMENSIONS
 
         mock_search.return_value = [
             {
@@ -332,17 +317,13 @@ class TestQueryEndpoint:
 class TestQueryRateLimit:
     """POST /retrieval/query is rate-limited, same as auth and upload-url."""
 
-    @patch("app.retrieval.routes.openai")
+    @patch("app.retrieval.routes.embed_query")
     @patch("app.retrieval.routes.generate_streaming")
     @patch("app.retrieval.routes.permission_filtered_search")
     def test_query_returns_429_after_20_requests_per_minute(
-        self, mock_search, mock_generate, mock_openai, query_client, query_db
+        self, mock_search, mock_generate, mock_embed, query_client, query_db
     ):
-        mock_embed_response = MagicMock()
-        mock_embed_response.data = [MagicMock(embedding=[0.1] * 1536)]
-        mock_openai.OpenAI.return_value.embeddings.create.return_value = (
-            mock_embed_response
-        )
+        mock_embed.return_value = [0.1] * EMBEDDING_DIMENSIONS
         mock_search.return_value = []
 
         def fake_generate(prompt):

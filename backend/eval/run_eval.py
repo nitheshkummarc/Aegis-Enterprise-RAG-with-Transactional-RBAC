@@ -16,7 +16,7 @@ CRITICAL: This uses the SAME JWT secret and creation logic as the backend.
 
 Every question is run against the real pipeline:
   - permission_filtered_search runs the real SQL against real pgvector,
-    using a real OpenAI query embedding (this is what retrieval_latency
+    using a real Groq query embedding (this is what retrieval_latency
     measures — DB time only, embedding excluded from the timer)
   - /retrieval/query is called end-to-end through the real FastAPI app
     (real embedding, real SQL, real Groq generation on GROQ_MODEL), and scoring
@@ -37,7 +37,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from fastapi.testclient import TestClient
 import jwt as pyjwt
-import openai
 from app.main import app
 from app.config import get_settings
 from sqlalchemy.orm import sessionmaker
@@ -46,6 +45,7 @@ from app.db.models import User, UserRole, Document, DocumentChunk
 from app.auth.jwt import create_access_token  # THE backend's JWT logic
 from app.retrieval.search import get_role_level, permission_filtered_search
 from app.retrieval.generate import active_model_name  # report the model that actually ran
+from app.ingestion.embedder import embed_query, embedding_model_name
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -129,12 +129,13 @@ def generate_jwt_for_role(user: User) -> str:
 # Real retrieval + real generation
 # ---------------------------------------------------------------------------
 
-def embed_question(openai_client: "openai.OpenAI", question: str) -> list[float]:
-    response = openai_client.embeddings.create(
-        model="text-embedding-3-small",
-        input=question,
-    )
-    return response.data[0].embedding
+def embed_question(question: str) -> list[float]:
+    """Embed a question through the same code path the request handler uses.
+
+    Deliberately not a second client: the harness must exercise the real
+    embedder, or it would be measuring a pipeline the application does not run.
+    """
+    return embed_query(question)
 
 
 def run_real_permission_search(
@@ -286,7 +287,6 @@ def run_evaluation():
     SessionLocal = sessionmaker(bind=engine)
     db = SessionLocal()
     settings = get_settings()
-    openai_client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
     client = TestClient(app)
 
     try:
@@ -343,7 +343,7 @@ def run_evaluation():
             else:
                 user_role = UserRole(asking_role)
                 user_role_level = get_role_level(user_role)
-                query_embedding = embed_question(openai_client, question)
+                query_embedding = embed_question(question)
 
                 chunks, latency_ms = run_real_permission_search(
                     db, query_embedding, user_role
@@ -402,6 +402,7 @@ def run_evaluation():
 
         summary = {
             "generation_model": active_model_name(),
+            "embedding_model": embedding_model_name(),
             "retrieval_latency": {
                 "avg_ms": round(avg_lat, 2),
                 "p95_ms": round(p95_lat, 2),
@@ -473,7 +474,7 @@ def _generate_markdown_report(summary: dict, results: list[dict]):
         f"**Generated**: {summary['timestamp']}",
         "",
         "This report is produced by running every golden-dataset question",
-        "through the real `/retrieval/query` endpoint — real OpenAI",
+        "through the real `/retrieval/query` endpoint — real Groq",
         "embedding, real `permission_filtered_search` against pgvector,",
         f"real `{active_model_name()}` generation on Groq — and scoring against",
         "the model's actual generated answer, not the retrieved chunk text.",
@@ -483,6 +484,7 @@ def _generate_markdown_report(summary: dict, results: list[dict]):
         "| Metric | Value |",
         "|---|---|",
         f"| Generation Model | `{summary.get('generation_model', 'unknown')}` |",
+        f"| Embedding Model | `{summary.get('embedding_model', 'unknown')}` |",
         f"| Total Questions | {summary['total_questions']} |",
         f"| Permission Compliance | {summary['permission_compliance']['pass_rate']} ({summary['permission_compliance']['passed']}/{summary['permission_compliance']['total']}) |",
         f"| Boundary Cases | {summary['boundary_cases']['pass_rate']} ({summary['boundary_cases']['passed']}/{summary['boundary_cases']['total']}) |",

@@ -25,8 +25,9 @@ redis>=5.0.0
 # PDF parsing (Phase 2)
 PyMuPDF>=1.24.0
 
-# OpenAI — embeddings ONLY (text-embedding-3-small). Generation moved to
-# Groq via LangChain; nothing in the generation path imports this SDK.
+# Generic OpenAI-protocol HTTP client, pointed at Groq's compatible endpoint
+# (GROQ_API_BASE) for embeddings. This is a wire-protocol dependency, NOT a
+# dependency on an OpenAI account — no code path reads an OpenAI credential.
 openai>=1.30.0
 
 # Generation (LangChain + Groq)

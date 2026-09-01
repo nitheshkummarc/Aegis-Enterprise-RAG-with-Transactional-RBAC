@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from app.db.models import Base, User, UserRole, Document, DocumentChunk
 from app.retrieval.search import permission_filtered_search
 from app.config import get_settings
+from app.config import EMBEDDING_DIMENSIONS
 
 
 @pytest.fixture(scope="module")
@@ -57,14 +58,14 @@ def test_empirical_postgres_rbac_blocks_admin_chunks_from_viewers(db_session):
         document_id=viewer_doc.id, 
         chunk_index=0, 
         text_content="Public info", 
-        embedding=[0.1] * 1536, 
+        embedding=[0.1] * EMBEDDING_DIMENSIONS, 
         min_role_level=0
     )
     admin_chunk = DocumentChunk(
         document_id=admin_doc.id, 
         chunk_index=0, 
         text_content="Admin secret info", 
-        embedding=[0.1] * 1536, 
+        embedding=[0.1] * EMBEDDING_DIMENSIONS, 
         min_role_level=2
     )
     db_session.add_all([viewer_chunk, admin_chunk])
@@ -73,7 +74,7 @@ def test_empirical_postgres_rbac_blocks_admin_chunks_from_viewers(db_session):
     # 2. Execute vector search natively in PostgreSQL as a Viewer
     viewer_results = permission_filtered_search(
         db=db_session,
-        query_embedding=[0.1] * 1536,
+        query_embedding=[0.1] * EMBEDDING_DIMENSIONS,
         user_role=UserRole.viewer,  # Viewer role
         limit=5
     )
@@ -89,7 +90,7 @@ def test_empirical_postgres_rbac_blocks_admin_chunks_from_viewers(db_session):
     # 4. Prove Admin CAN see it
     admin_results = permission_filtered_search(
         db=db_session,
-        query_embedding=[0.1] * 1536,
+        query_embedding=[0.1] * EMBEDDING_DIMENSIONS,
         user_role=UserRole.admin,  # Admin role
         limit=5
     )

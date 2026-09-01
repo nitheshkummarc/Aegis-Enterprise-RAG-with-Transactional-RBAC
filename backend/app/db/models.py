@@ -24,6 +24,8 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, relationship
 from pgvector.sqlalchemy import Vector
 
+from app.config import EMBEDDING_DIMENSIONS
+
 
 class Base(DeclarativeBase):
     """Base class for all ORM models."""
@@ -126,7 +128,7 @@ class DocumentChunk(Base):
     )
     chunk_index = Column(Integer, nullable=False)
     text_content = Column(Text, nullable=False)
-    embedding = Column(Vector(1536), nullable=False)
+    embedding = Column(Vector(EMBEDDING_DIMENSIONS), nullable=False)
     min_role_level = Column(SmallInteger, nullable=False)
     created_at = Column(
         DateTime(timezone=True),

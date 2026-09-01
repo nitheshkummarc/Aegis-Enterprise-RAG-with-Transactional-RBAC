@@ -23,6 +23,7 @@ from app.db.models import (
 )
 from app.core.security import hash_password
 from app.retrieval.search import get_role_level
+from app.config import EMBEDDING_DIMENSIONS
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +103,7 @@ def seeded_db(security_db):
     db.commit()
 
     # Create one chunk per document with a fake embedding
-    fake_embedding = [0.1] * 1536
+    fake_embedding = [0.1] * EMBEDDING_DIMENSIONS
     for i, doc in enumerate([viewer_doc, manager_doc, admin_doc]):
         chunk = DocumentChunk(
             document_id=doc.id,
@@ -283,7 +284,7 @@ class TestRBACEnforcement:
                 document_id=doc.id,
                 chunk_index=99,
                 text_content="Should not be stored",
-                embedding=[0.0] * 1536,
+                embedding=[0.0] * EMBEDDING_DIMENSIONS,
                 min_role_level=5,  # Out of range
             )
             db.add(bad_chunk)
@@ -302,7 +303,7 @@ class TestRBACEnforcement:
                 {
                     "id": str(uuid.uuid4()),
                     "doc_id": str(doc.id),
-                    "embedding": str([0.0] * 1536),
+                    "embedding": str([0.0] * EMBEDDING_DIMENSIONS),
                 },
             )
             db.commit()

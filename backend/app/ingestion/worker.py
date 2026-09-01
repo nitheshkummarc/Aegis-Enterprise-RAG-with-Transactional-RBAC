@@ -317,7 +317,7 @@ def ingest_document(self, document_id: str, object_key: str) -> dict:
 
 
 def _embed_with_retry(task, chunks: list[str]) -> list[list[float]]:
-    """Embed chunks with retry logic for OpenAI rate limits.
+    """Embed chunks with retry logic for provider rate limits.
 
     Only retries on rate limit errors (429). Other errors fail immediately.
     Uses Celery's retry mechanism with exponential backoff (max 3 attempts).
@@ -337,7 +337,7 @@ def _embed_with_retry(task, chunks: list[str]) -> list[list[float]]:
             if attempt >= max_attempts:
                 raise
             logger.warning(
-                "OpenAI rate limit hit (attempt %d/%d), retrying in %ds...",
+                "Groq rate limit hit (attempt %d/%d), retrying in %ds...",
                 attempt, max_attempts, delay,
             )
             import time

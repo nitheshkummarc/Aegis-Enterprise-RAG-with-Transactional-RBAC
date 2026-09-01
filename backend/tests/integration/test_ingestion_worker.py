@@ -26,6 +26,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.db.models import Base, User, UserRole, Document, DocumentChunk
 from app.core.security import hash_password
+from app.config import EMBEDDING_DIMENSIONS
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +163,7 @@ class TestIngestDocumentTask:
         expected_role_level = sample_document.min_role_level
         object_key = sample_document.object_key
 
-        mock_embed.side_effect = lambda texts: [[0.1] * 1536 for _ in texts]
+        mock_embed.side_effect = lambda texts: [[0.1] * EMBEDDING_DIMENSIONS for _ in texts]
         mock_download.side_effect = _writes_bytes_to_dest(
             _make_pdf_bytes(SAMPLE_PDF_TEXT)
         )
@@ -276,7 +277,7 @@ class TestIngestDocumentTask:
         session.commit()
         session.refresh(admin_doc)
 
-        mock_embed.side_effect = lambda texts: [[0.5] * 1536 for _ in texts]
+        mock_embed.side_effect = lambda texts: [[0.5] * EMBEDDING_DIMENSIONS for _ in texts]
         mock_download.side_effect = _writes_bytes_to_dest(
             _make_pdf_bytes("Top secret admin content for testing.")
         )
@@ -350,7 +351,7 @@ class TestIngestDocumentRetry:
                 f.write(pdf_bytes)
 
         mock_download.side_effect = flaky_download
-        mock_embed.side_effect = lambda texts: [[0.1] * 1536 for _ in texts]
+        mock_embed.side_effect = lambda texts: [[0.1] * EMBEDDING_DIMENSIONS for _ in texts]
 
         with _eager_celery(celery_app):
             with patch(
@@ -495,7 +496,7 @@ class TestCleanupStuckDocuments:
             document_id=doc_id,
             chunk_index=0,
             text_content="partial content",
-            embedding=[0.1] * 1536,
+            embedding=[0.1] * EMBEDDING_DIMENSIONS,
             min_role_level=0,
         )
         session.add(chunk)

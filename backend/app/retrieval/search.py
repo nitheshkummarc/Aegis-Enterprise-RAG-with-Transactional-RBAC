@@ -52,7 +52,7 @@ def permission_filtered_search(
 
     Args:
         db: SQLAlchemy session.
-        query_embedding: The query embedding vector (1536 dims).
+        query_embedding: The query embedding vector (EMBEDDING_DIMENSIONS wide).
         user_role: The authenticated user's role.
         limit: Maximum number of chunks to return.
 

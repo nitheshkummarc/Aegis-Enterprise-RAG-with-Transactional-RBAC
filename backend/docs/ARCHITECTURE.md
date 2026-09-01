@@ -50,7 +50,7 @@ To support fast similarity search at scale, Aegis utilizes PostgreSQL with the `
 *   **Operator Match**: The database is configured with HNSW (Hierarchical Navigable Small World) indexes specifically using the `vector_cosine_ops` operator class.
 *   **Query Match**: The retrieval SQL query explicitly uses the `<=>` operator (cosine distance) rather than `<->` (L2 distance), ensuring the query path perfectly matches the index path.
 *   **Per-role partial indexes**: A single HNSW index over the whole table doesn't natively combine with the `min_role_level` filter — the planner can end up ANN-scanning chunks a role isn't even allowed to see, only to discard them post-filter. Since roles are a fixed 3-tier set, Aegis instead builds one *cumulative partial* HNSW index per level (`WHERE min_role_level <= 0/1/2`): a viewer's query only ever scans public content, a manager's scans public+internal, and admin's covers everything. This keeps ANN scan cost proportional to what the querying role can actually see, not the whole table.
-*   **Why it matters**: Using cosine distance aligns precisely with OpenAI's `text-embedding-3-small` output geometry, and the per-role partial indexes keep retrieval fast for lower-privilege roles even as the admin-only tier of the corpus grows large.
+*   **Why it matters**: Cosine distance matches the output geometry of the configured embedding model (`GROQ_EMBEDDING_MODEL`, served over Groq's OpenAI-compatible endpoint), and the per-role partial indexes keep retrieval fast for lower-privilege roles even as the admin-only tier of the corpus grows large.
 
 ## 3. Isolated Celery Worker Sessions
 
