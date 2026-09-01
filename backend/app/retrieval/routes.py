@@ -15,6 +15,7 @@ frontend's SourcesDropdown reads only from the final done event.
 
 import json
 import logging
+from contextlib import contextmanager
 
 import openai
 
@@ -25,12 +26,14 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user
 from app.config import get_settings
+from app.core.exceptions import ConfigurationError
 from app.core.limiter import limiter
 from app.db.models import User, ROLE_LEVEL_MAP
 from app.db.session import get_db
 from app.retrieval.prompt import build_prompt
 from app.retrieval.search import permission_filtered_search
-from app.retrieval.generate import generate_streaming, GENERATION_MODEL
+from app.core.observability import get_client as get_langfuse_client
+from app.retrieval.generate import generate_streaming, active_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -47,34 +50,89 @@ def _sse_event(data: dict) -> str:
     return f"data: {json.dumps(data)}\n\n"
 
 
-def _try_langfuse_trace(user: User, question: str):
-    """Attempt to create a Langfuse trace. Returns (langfuse_client, trace, enabled) tuple.
+def _start_query_trace(user: User, question: str):
+    """Open the root observation for one RAG query, or return ``None``.
 
-    If Langfuse keys are not configured, returns (None, None, False) gracefully
-    so the query still works without observability.
+    Created with the non-context-manager API on purpose. The SSE generator
+    runs *after* this handler returns, potentially on a different worker
+    thread, so the root span must outlive this frame. Holding an OpenTelemetry
+    context open across that boundary would risk detaching it from the wrong
+    thread; an explicit span object has no such coupling and is ended by the
+    generator instead.
+
+    ``propagate_attributes`` is the v4 replacement for the removed
+    ``langfuse.trace(user_id=...)`` argument. It applies to spans created
+    inside its block, so entering it just long enough to create the root span
+    is what puts user and role on the trace.
     """
-    settings = get_settings()
-    if not settings.LANGFUSE_PUBLIC_KEY or not settings.LANGFUSE_SECRET_KEY:
-        return None, None, False
+    client = get_langfuse_client()
+    if client is None:
+        return None
 
-    try:
-        from langfuse import Langfuse
+    from langfuse import propagate_attributes
 
-        langfuse = Langfuse(
-            public_key=settings.LANGFUSE_PUBLIC_KEY,
-            secret_key=settings.LANGFUSE_SECRET_KEY,
-            host=settings.LANGFUSE_HOST,
-        )
-        trace = langfuse.trace(
+    with propagate_attributes(
+        user_id=str(user.email),
+        metadata={"role": user.role.value},
+    ):
+        return client.start_observation(
             name="rag-query",
-            user_id=str(user.email),
-            metadata={"role": user.role.value},
+            as_type="span",
             input=question,
         )
-        return langfuse, trace, True
-    except Exception as e:
-        logger.warning("Langfuse initialization failed: %s", e)
-        return None, None, False
+
+
+@contextmanager
+def _retrieval_span(root, user: User):
+    """Time the permission-filtered SQL search as its own observation.
+
+    Retrieval is hand-instrumented because it is a raw pgvector query, not a
+    LangChain operation — there is no callback that could report it. It is
+    also the span that documents the authorization boundary, so the role and
+    the resolved role level are recorded here.
+    """
+    if root is None:
+        yield None
+        return
+
+    span = root.start_observation(
+        name="1. Permission-Filtered Retrieval",
+        as_type="retriever",
+        metadata={
+            "user_role": user.role.value,
+            "user_role_level": ROLE_LEVEL_MAP.get(user.role, 0),
+        },
+    )
+    try:
+        yield span
+    finally:
+        span.end()
+
+
+@contextmanager
+def _generation_span(root, prompt: str):
+    """Make the generation the current observation while the LLM streams.
+
+    Unlike the retrieval span this one is only a container: it is entered as
+    the *current* context so that the Langfuse LangChain callback attached in
+    the generation layer nests its own generation observation underneath,
+    reporting model, prompt, completion and token usage on its own. That
+    callback is what replaces the hand-rolled span the previous
+    implementation tried, and failed, to create.
+
+    Entered and exited entirely inside the SSE generator, so the OTEL context
+    is attached and detached on the same thread.
+    """
+    if root is None:
+        yield None
+        return
+
+    with root.start_as_current_observation(
+        name="2. LLM Generation",
+        as_type="span",
+        input=prompt,
+    ) as span:
+        yield span
 
 
 @router.post("/query")
@@ -88,13 +146,15 @@ async def query(
     """Embed user query → permission-filtered search → LLM generation → SSE stream.
 
     Rate-limited like the other cost-sensitive routes (auth, upload-url) —
-    each call is a billed OpenAI request.
+    each call spends an OpenAI embedding request and a Groq generation
+    request, both against metered quotas.
     """
     settings = get_settings()
     question = body.question
 
-    # Initialize Langfuse trace (graceful fallback if not configured)
-    langfuse_client, trace, langfuse_enabled = _try_langfuse_trace(current_user, question)
+    # Root observation for this query. None when Langfuse is unconfigured;
+    # every span helper below treats that as "tracing off".
+    root_span = _start_query_trace(current_user, question)
 
     # ------------------------------------------------------------------
     # Step 1: Embed the user's question
@@ -116,28 +176,18 @@ async def query(
     # ------------------------------------------------------------------
     # Step 2: Permission-filtered retrieval
     # ------------------------------------------------------------------
-    retrieval_span = None
-    if langfuse_enabled and trace:
-        retrieval_span = trace.span(
-            name="1. Permission-Filtered Retrieval",
-            metadata={
-                "user_role": current_user.role.value,
-                "user_role_level": ROLE_LEVEL_MAP.get(current_user.role, 0),
-            },
+    with _retrieval_span(root_span, current_user) as retrieval_span:
+        chunks = permission_filtered_search(
+            db=db,
+            query_embedding=query_embedding,
+            user_role=current_user.role,
+            limit=3,
         )
-
-    chunks = permission_filtered_search(
-        db=db,
-        query_embedding=query_embedding,
-        user_role=current_user.role,
-        limit=3,
-    )
-
-    if retrieval_span:
-        retrieval_span.end(
-            output={"chunk_count": len(chunks)},
-            metadata={"chunks_returned": len(chunks)},
-        )
+        if retrieval_span:
+            retrieval_span.update(
+                output={"chunk_count": len(chunks)},
+                metadata={"chunks_returned": len(chunks)},
+            )
 
     # Build sources list for the done event
     sources = [
@@ -162,58 +212,59 @@ async def query(
     prompt = build_prompt(context=context, question=question)
 
     def event_stream():
-        generation_span = None
-        if langfuse_enabled and trace:
-            generation_span = trace.span(
-                name="2. LLM Generation",
-                metadata={"model": GENERATION_MODEL},
-                input=prompt,
-            )
-
         full_response = ""
         usage = {}
 
         try:
-            for event in generate_streaming(prompt):
-                if event["type"] == "token":
-                    full_response += event["text"]
-                    yield _sse_event({"type": "token", "text": event["text"]})
-                elif event["type"] == "done":
-                    usage = event.get("usage", {})
-                    # Send sources ONLY in the done event, never in token events
+            with _generation_span(root_span, prompt) as generation_span:
+                try:
+                    for event in generate_streaming(prompt):
+                        if event["type"] == "token":
+                            full_response += event["text"]
+                            yield _sse_event({"type": "token", "text": event["text"]})
+                        elif event["type"] == "done":
+                            usage = event.get("usage", {})
+                            # Send sources ONLY in the done event, never in token events
+                            yield _sse_event({
+                                "type": "done",
+                                "sources": sources,
+                            })
+                except ConfigurationError:
+                    # Tier 1: the process is misconfigured (no GROQ_API_KEY, no
+                    # GROQ_MODEL). Not recoverable and not the user's problem to
+                    # retry — surface it instead of masking it as a transient
+                    # "generation failed", which is how the Langfuse breakage
+                    # stayed invisible.
+                    raise
+                except Exception as e:
+                    logger.error("Generation error: %s", e)
+                    # sources was computed before generation started, so it's still
+                    # the real, permission-checked result — send it, not [].
+                    yield _sse_event({
+                        "type": "error",
+                        "detail": "Generation failed. Please try again.",
+                    })
                     yield _sse_event({
                         "type": "done",
                         "sources": sources,
                     })
-        except Exception as e:
-            logger.error("Generation error: %s", e)
-            # sources was computed before generation started, so it's still
-            # the real, permission-checked result — send it, not [].
-            yield _sse_event({
-                "type": "error",
-                "detail": "Generation failed. Please try again.",
-            })
-            yield _sse_event({
-                "type": "done",
-                "sources": sources,
-            })
 
-        if generation_span:
-            generation_span.end(
-                output=full_response,
-                metadata={
-                    "model": GENERATION_MODEL,
-                    "token_usage": usage,
-                },
-            )
-
-        # Flush Langfuse — reuse the client from _try_langfuse_trace
-        if langfuse_enabled and trace and langfuse_client:
-            trace.update(output=full_response)
-            try:
-                langfuse_client.flush()
-            except Exception as e:
-                logger.warning("Langfuse flush failed: %s", e)
+                if generation_span:
+                    generation_span.update(
+                        output=full_response,
+                        metadata={
+                            "model": active_model_name(),
+                            "token_usage": usage,
+                        },
+                    )
+        finally:
+            # The root span outlives the handler, so the generator owns
+            # closing it. No explicit flush: the v4 client batches on a
+            # background interval and flushes via its atexit hook, and a
+            # blocking per-request flush would stall the response.
+            if root_span is not None:
+                root_span.update(output=full_response)
+                root_span.end()
 
     return StreamingResponse(
         event_stream(),
