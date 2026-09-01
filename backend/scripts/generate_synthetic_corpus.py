@@ -219,7 +219,7 @@ def check_cross_contamination(documents: list[dict]) -> None:
     """Scan lower-tier documents for keywords that belong to higher tiers.
 
     Raises ValueError immediately if contamination is detected.
-    This is the defensible proof of data hygiene required by Section 7.
+    Confirms that tier-exclusive facts do not appear in lower-tier documents.
     """
     violations = []
 

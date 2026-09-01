@@ -1,22 +1,21 @@
-"""Celery worker for async document ingestion.
+"""Celery worker for asynchronous document ingestion.
 
-IMPORTANT: This module creates its OWN SQLAlchemy engine and session factory,
-separate from FastAPI's request-scoped session. Celery runs in its own process;
-sharing a session/connection pool across processes causes connection-pool
-exhaustion or 'no application context' errors under load.
+This module creates its own SQLAlchemy engine and session factory, separate
+from FastAPI's request-scoped session. Celery runs in its own process, and
+sharing a connection pool across processes causes pool exhaustion and
+application-context errors under load.
 
-Ingestion flow (post-refactor):
+Ingestion flow:
 1. Receive {document_id, object_key} from the queue.
 2. Idempotency check: if chunks already exist for this document_id, skip.
 3. Download PDF from Supabase Storage to a temp file (deleted in `finally`).
 4. Extract text → chunk → embed → batch insert → mark ready.
-5. On success, delete the raw PDF from storage (dead weight after chunking).
+5. On success, delete the raw PDF from storage; it is no longer needed.
 6. On persistent failure (corrupt PDF, extraction error), mark as 'failed'
    (dead-letter) rather than infinite-retrying.
 
-Also defines cleanup_stuck_documents, a periodic (Celery Beat) task that
-dead-letters Documents orphaned in status='processing' with no chunks —
-see the bottom of this module.
+Also defines cleanup_stuck_documents, a periodic Celery Beat task that
+marks as failed any document left in status='processing' with no chunks.
 """
 
 import logging
@@ -119,7 +118,7 @@ def _delete_from_storage(object_key: str) -> None:
         supabase.storage.from_("documents").remove([object_key])
         logger.info("Deleted storage object: %s", object_key)
     except Exception as e:
-        # Best-effort deletion — don't fail the task over this
+        # Best-effort deletion; failure here must not fail the task.
         logger.warning("Failed to delete storage object %s: %s", object_key, e)
 
 
@@ -142,18 +141,18 @@ def ingest_document(self, document_id: str, object_key: str) -> dict:
     The task follows this pipeline:
     0. Idempotency check: skip if chunks already exist for this document_id
     1. Download PDF from Supabase Storage to a temp file
-    2. PyMuPDF text extraction (fail-fast on corrupt PDF — no retries)
+    2. PyMuPDF text extraction; a corrupt PDF fails without retry
     3. Recursive chunking (500 chars, 50 overlap)
-    4. Groq embedding (retry with exponential backoff on rate limit)
+    4. Embedding, with exponential backoff on rate limits
     5. Batch insert chunks into document_chunks with min_role_level from parent
     6. Update document status to 'ready'
-    7. Delete the raw PDF from storage (dead weight after chunking)
+    7. Delete the raw PDF from storage
 
     All chunk inserts and the status update happen in a single transaction.
     A worker crash mid-batch never leaves status='ready' with partial chunks.
 
-    On persistent extraction failures (corrupt PDF, empty content), the
-    document is marked as 'failed' (dead-lettered) — no infinite retries.
+    On persistent extraction failures the document is marked 'failed' rather
+    than retried indefinitely.
     """
     from app.ingestion.parser import extract_text_from_pdf
     from app.ingestion.chunker import chunk_text
@@ -170,8 +169,8 @@ def ingest_document(self, document_id: str, object_key: str) -> dict:
             return {"status": "error", "detail": "Document not found"}
 
         # ------------------------------------------------------------------
-        # Step 0: Idempotency — skip if chunks already exist
-        # Prevents duplicate Groq embedding charges on queue redelivery.
+        # Step 0: skip if chunks already exist, so a redelivered message
+        # does not repeat embedding requests.
         # ------------------------------------------------------------------
         existing_count = db.execute(
             select(func.count()).where(DocumentChunk.document_id == doc.id)
@@ -317,10 +316,10 @@ def ingest_document(self, document_id: str, object_key: str) -> dict:
 
 
 def _embed_with_retry(task, chunks: list[str]) -> list[list[float]]:
-    """Embed chunks with retry logic for provider rate limits.
+    """Embed chunks, retrying on provider rate limits.
 
-    Only retries on rate limit errors (429). Other errors fail immediately.
-    Uses Celery's retry mechanism with exponential backoff (max 3 attempts).
+    Retries only on HTTP 429, with exponential backoff, up to three attempts.
+    Other errors are raised immediately.
     """
     import openai
     from app.ingestion.embedder import embed_texts
@@ -337,14 +336,14 @@ def _embed_with_retry(task, chunks: list[str]) -> list[list[float]]:
             if attempt >= max_attempts:
                 raise
             logger.warning(
-                "Groq rate limit hit (attempt %d/%d), retrying in %ds...",
+                "Embedding rate limit hit (attempt %d/%d), retrying in %ds",
                 attempt, max_attempts, delay,
             )
             import time
             time.sleep(delay)
             delay *= 2  # Exponential backoff
         except Exception:
-            # Non-rate-limit errors fail immediately — no retry
+            # Non-rate-limit errors are not retried.
             raise
 
     raise RuntimeError("Embedding failed after max retries")  # Should not reach here

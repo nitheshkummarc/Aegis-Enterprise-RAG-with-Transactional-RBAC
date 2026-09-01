@@ -1,12 +1,8 @@
-"""Unit tests for the LangChain/Groq generation layer.
+"""Unit tests for the generation layer.
 
-These cover the pieces that have no other guard: the SSE event contract that
-five integration tests patch over, the usage-metadata parsing that Groq only
-sometimes populates, and the reasoning-token exclusion that the eval
-harness's exact refusal-string check depends on.
-
-They deliberately drive ``_stream_tokens`` with hand-built chunks rather than
-a live model, so a failure points at the accumulation logic and nothing else.
+Covers the SSE event contract, usage-metadata parsing, reasoning-token
+exclusion, and configuration errors. The streaming tests drive _stream_tokens
+with constructed chunks rather than a live model.
 """
 
 import pytest
@@ -22,7 +18,7 @@ from app.retrieval.generate import (
 
 
 class TestUsageParsing:
-    """Groq reports usage only on the final chunk, and sometimes not at all."""
+    """Usage metadata is present only on the final chunk, if at all."""
 
     def test_usage_metadata_maps_to_sse_contract_keys(self):
         chunk = AIMessageChunk(
@@ -44,8 +40,7 @@ class TestUsageParsing:
 
 
 class TestStreamTokens:
-    """The yielded event shape is a contract shared with routes.py and the
-    eval harness — it must not drift."""
+    """The yielded event shape is shared with routes.py and the eval harness."""
 
     def test_tokens_then_single_done_event(self):
         events = list(_stream_tokens([
@@ -75,14 +70,12 @@ class TestStreamTokens:
         }
 
     def test_missing_usage_degrades_to_empty_dict(self):
-        """Absent usage is an expected Groq behavior, not a failure: the done
-        event must still be well-formed."""
+        """A missing usage payload must still produce a valid done event."""
         done = list(_stream_tokens([AIMessageChunk(content="answer")]))[-1]
         assert done["usage"] == {}
 
     def test_empty_stream_still_yields_exactly_one_done_event(self):
-        """routes.py only emits the SSE done event (carrying sources) when it
-        sees a done event — a silent model must not swallow it."""
+        """routes.py emits its done event only on receiving one from here."""
         events = list(_stream_tokens([]))
         assert len(events) == 1
         assert events[0]["type"] == "done"
@@ -103,9 +96,7 @@ class TestStreamTokens:
         assert done["model"] == active_model_name()
 
     def test_reasoning_blocks_are_excluded_from_the_token_stream(self):
-        """gpt-oss-120b emits reasoning traces. If they reach full_response
-        they corrupt the eval harness's exact-substring refusal check, so a
-        structured chunk must contribute only its text block."""
+        """Reasoning blocks must not contribute to the token stream."""
         chunk = AIMessageChunk(content=[
             {"type": "reasoning", "reasoning": "Let me check whether the context covers this"},
             {"type": "text", "text": "I do not have access to that information."},
@@ -118,8 +109,7 @@ class TestStreamTokens:
 
 
 class TestMisconfigurationIsLoud:
-    """Config faults must raise, never degrade into a generic 502. A silently
-    swallowed setup error is exactly how the Langfuse v2/v4 mismatch hid."""
+    """Configuration errors must raise rather than degrade."""
 
     def test_build_llm_without_api_key_raises(self, monkeypatch):
         monkeypatch.setattr(

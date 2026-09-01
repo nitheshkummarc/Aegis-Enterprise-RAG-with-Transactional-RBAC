@@ -9,7 +9,7 @@ LangChain retrieval constructs must not be introduced here.
 
 The prompt arrives pre-rendered from app.retrieval.prompt.build_prompt and is
 passed through unchanged. It is not wrapped in a ChatPromptTemplate, which
-would re-parse ``{...}`` placeholders that build_prompt deliberately escapes.
+would re-parse the ``{...}`` placeholders that build_prompt substitutes.
 """
 
 from typing import Any, Generator, Iterable

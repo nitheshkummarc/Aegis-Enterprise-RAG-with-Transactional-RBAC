@@ -1,11 +1,7 @@
 """Permission-filtered vector search using pgvector.
 
-The core query uses the <=> (cosine distance) operator to match the
-vector_cosine_ops HNSW index defined in the Section 3 migration.
-Permission filtering happens via: WHERE dc.min_role_level <= %(user_role_level)s
-
-This is the central architectural bet of the project: permissions and vectors
-are in the same table scan, not a join-then-filter.
+Permission filtering and vector ordering are expressed in a single SQL
+statement, so unauthorised chunks are never returned to the application.
 """
 
 from sqlalchemy import text
@@ -14,9 +10,8 @@ from sqlalchemy.orm import Session
 from app.db.models import UserRole, ROLE_LEVEL_MAP
 
 
-# The exact SQL from Section 3 of the Master Build Prompt.
-# Uses <=> (cosine distance) — NOT <-> (L2) — to match vector_cosine_ops index.
-# The JOIN to documents fetches title for the Sources dropdown in Phase 4.
+# Uses <=> (cosine distance) to match the vector_cosine_ops HNSW indexes.
+# The join to documents supplies the title shown in the sources list.
 PERMISSION_FILTERED_SEARCH_SQL = text("""
     SELECT dc.id AS chunk_id,
            dc.text_content,
@@ -34,10 +29,10 @@ PERMISSION_FILTERED_SEARCH_SQL = text("""
 
 
 def get_role_level(role: UserRole) -> int:
-    """Resolve a UserRole enum to its numeric level.
+    """Return the numeric clearance level for a role.
 
-    Never trust a numeric level sent directly by the client — always
-    resolve from the JWT's role claim via this fixed mapping.
+    Levels are resolved from this fixed mapping rather than from any
+    client-supplied value.
     """
     return ROLE_LEVEL_MAP.get(role, 0)
 
@@ -62,7 +57,7 @@ def permission_filtered_search(
     """
     user_role_level = get_role_level(user_role)
 
-    # Format embedding as pgvector literal string
+    # pgvector accepts the vector as a bracketed literal string.
     embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
 
     result = db.execute(

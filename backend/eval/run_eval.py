@@ -57,7 +57,7 @@ LATEST_RESULTS_PATH = RESULTS_DIR / "latest.json"
 DOCS_DIR = Path(__file__).parent.parent / "docs"
 EVAL_REPORT_PATH = DOCS_DIR / "EVAL_RESULTS.md"
 
-# The exact refusal string from the system prompt (Section 5)
+# The exact refusal string the prompt instructs the model to produce.
 REFUSAL_STRING = "I do not have access to that information."
 
 
@@ -130,11 +130,7 @@ def generate_jwt_for_role(user: User) -> str:
 # ---------------------------------------------------------------------------
 
 def embed_question(question: str) -> list[float]:
-    """Embed a question through the same code path the request handler uses.
-
-    Deliberately not a second client: the harness must exercise the real
-    embedder, or it would be measuring a pipeline the application does not run.
-    """
+    """Embed a question using the same embedder as the request handler."""
     return embed_query(question)
 
 

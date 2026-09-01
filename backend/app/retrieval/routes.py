@@ -1,16 +1,15 @@
-"""Query route: embed → permission-filtered search → generate → SSE stream.
+"""Query route: embed, permission-filtered search, generate, SSE stream.
 
-SSE payload format (from the Master Build Prompt):
+Server-sent event payloads:
+
     data: {"type": "token", "text": "partial answer chunk"}
-    data: {"type": "error", "detail": "human-readable failure reason"}
-    data: {"type": "done", "sources": [{"document_id": "...", "title": "...", "chunk_id": "..."}]}
+    data: {"type": "error", "detail": "failure reason"}
+    data: {"type": "done", "sources": [{"document_id", "title", "chunk_id"}]}
 
-The done event is ALWAYS the final event. Sources reflects exactly what the
-permission-filtered search returned: empty means no permitted chunks (an
-RBAC refusal), never a generation failure. A mid-stream LLM error emits an
-"error" event first, then a done event with the real (permitted) sources —
-this keeps generation failures distinguishable from access refusals. The
-frontend's SourcesDropdown reads only from the final done event.
+The done event is always last and carries the sources list. An empty sources
+list means no chunks were permitted, not that generation failed; a generation
+error emits an error event first, followed by a done event with the permitted
+sources.
 """
 
 import json
@@ -135,8 +134,7 @@ async def query(
     """
     question = body.question
 
-    # Root observation for this query. None when Langfuse is unconfigured;
-    # every span helper below treats that as "tracing off".
+    # None when Langfuse is unconfigured; the span helpers handle that.
     root_span = _start_query_trace(current_user, question)
 
     # ------------------------------------------------------------------
@@ -184,8 +182,7 @@ async def query(
     # Step 3: LLM Generation (stream via SSE)
     # ------------------------------------------------------------------
     if not chunks:
-        # No permitted chunks — the LLM should refuse, but we also make
-        # sure by providing empty context
+        # No permitted chunks: an empty context leaves nothing to answer from.
         context = ""
     else:
         context = "\n\n---\n\n".join(c["text_content"] for c in chunks)
@@ -205,7 +202,7 @@ async def query(
                             yield _sse_event({"type": "token", "text": event["text"]})
                         elif event["type"] == "done":
                             usage = event.get("usage", {})
-                            # Send sources ONLY in the done event, never in token events
+                            # Sources are sent only in the done event.
                             yield _sse_event({
                                 "type": "done",
                                 "sources": sources,
@@ -216,8 +213,8 @@ async def query(
                     raise
                 except Exception as e:
                     logger.error("Generation error: %s", e)
-                    # sources was computed before generation started, so it's still
-                    # the real, permission-checked result — send it, not [].
+                    # sources was computed before generation began and still
+                    # reflects the permission-filtered result.
                     yield _sse_event({
                         "type": "error",
                         "detail": "Generation failed. Please try again.",

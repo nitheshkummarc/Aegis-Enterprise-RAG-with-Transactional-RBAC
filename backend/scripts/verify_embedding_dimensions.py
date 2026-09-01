@@ -36,13 +36,11 @@ def main() -> int:
     except ConfigurationError as exc:
         print(f"FAIL: {exc}")
         return 2
-    except Exception as exc:  # provider fault — report it verbatim, don't mask
+    except Exception as exc:  # provider error, reported as-is
         print(f"FAIL: the embedding call did not succeed.\n  {type(exc).__name__}: {exc}")
         print(
-            "\nIf this is a 404/model_not_found, the account may not have access "
-            "to this embedding model. Groq's embeddings endpoint exists but is "
-            "not listed in the public API reference, so availability is worth "
-            "confirming in the console before assuming a code fault."
+            "\nA 403 or model_not_found usually means the project lacks access "
+            "to this model rather than indicating a code fault."
         )
         return 2
 

@@ -1,13 +1,9 @@
-"""THE critical test file — RBAC enforcement at the database layer.
+"""RBAC enforcement tests at the database layer.
 
-This file is the one you'll be asked to walk through in an interview.
-It contains the exact 6 required test cases from Section 6 of the Master
-Build Prompt.
-
-Since SQLite (used in tests) doesn't have pgvector, these tests verify
-the permission filtering logic directly against the database layer,
-which is the actual security-critical path. The vector similarity part
-is orthogonal to RBAC and is tested separately.
+Contains the six required permission-enforcement cases. SQLite, used for
+these tests, has no pgvector extension, so the tests exercise the permission
+filter directly rather than through vector similarity, which is tested
+separately.
 """
 
 import uuid
@@ -151,12 +147,12 @@ def _get_permitted_chunks(db: Session, user_role: UserRole) -> list:
 
 
 # ---------------------------------------------------------------------------
-# THE 6 REQUIRED TEST CASES (Section 6)
+# REQUIRED RBAC ENFORCEMENT TEST CASES
 # ---------------------------------------------------------------------------
 
 
 class TestRBACEnforcement:
-    """The 6 required RBAC enforcement tests from Section 6."""
+    """The six required RBAC enforcement tests."""
 
     def test_viewer_cannot_retrieve_admin_only_chunks(self, seeded_db):
         """1. Seed an admin-only doc, query as viewer, assert chunk_ids == []
@@ -263,7 +259,7 @@ class TestRBACEnforcement:
         so it holds even if a future code path forgets to validate.
 
         Note: SQLite supports CHECK constraints, so this test works in
-        the test DB. In PostgreSQL, the CHECK constraint from Section 3
+        the test DB. In PostgreSQL, the CHECK constraint on min_role_level
         provides the same enforcement.
         """
         db = seeded_db["db"]

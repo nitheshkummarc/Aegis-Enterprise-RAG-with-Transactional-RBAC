@@ -1,6 +1,6 @@
 """SQLAlchemy ORM models for Aegis.
 
-These map to the schema defined in Section 3 of the Master Build Prompt.
+These mirror the schema created by the Alembic migrations.
 The embedding column uses pgvector's Vector type (not ARRAY(Float)) to
 support the <=> cosine distance operator and HNSW index.
 """

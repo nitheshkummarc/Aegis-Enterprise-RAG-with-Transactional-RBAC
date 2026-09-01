@@ -23,7 +23,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Create the complete Aegis schema from Section 3 of the Master Build Prompt."""
+    """Create the core tables, enum type, and pgvector extension."""
 
     # Enable pgvector extension
     op.execute("CREATE EXTENSION IF NOT EXISTS vector;")

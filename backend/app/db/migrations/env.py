@@ -22,7 +22,7 @@ if config.config_file_name is not None:
 settings = get_settings()
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
-# Model metadata for autogenerate support (not used for Phase 1 raw SQL migration,
+# Model metadata for autogenerate support (not used by the raw SQL migration,
 # but required for Alembic's infrastructure)
 target_metadata = Base.metadata
 

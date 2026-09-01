@@ -1,7 +1,7 @@
-"""Strict system prompt for the RAG generation step.
+"""System prompt template for the generation step.
 
-Exact text from Section 5 of the Master Build Prompt. Do not modify
-the wording — the eval harness checks for the exact refusal string.
+The evaluation harness matches the refusal sentence exactly, so the wording
+must not be changed.
 """
 
 import re
@@ -18,20 +18,13 @@ Question: {question}"""
 
 
 def build_prompt(context: str, question: str) -> str:
-    """Build the final prompt with context and question injected.
+    """Insert context and question into the prompt template.
 
-    Uses Template-style substitution to avoid Python format-string injection.
-    If user input contains '{context}' or '{question}', str.format() would
-    raise KeyError or leak variable names. Manual replacement is immune to this.
+    Both placeholders are substituted in a single pass. str.format() is not
+    used because braces in user input would raise or expose variable names,
+    and sequential str.replace() calls would allow a placeholder appearing in
+    the context to be overwritten by the question.
     """
-    # Do NOT use SYSTEM_PROMPT_TEMPLATE.format() — user-controlled content
-    # in `question` or `context` could contain {braces} that .format()
-    # would try to resolve, causing KeyError or information leakage.
-    #
-    # Do NOT chain two .replace() calls either: if context itself contains
-    # the literal substring "{question}", a second replace() over the
-    # already-substituted result would overwrite it with the live question.
-    # Substitute both placeholders in a single pass instead.
     replacements = {"{context}": context, "{question}": question}
     pattern = re.compile("|".join(re.escape(k) for k in replacements))
     return pattern.sub(lambda m: replacements[m.group(0)], SYSTEM_PROMPT_TEMPLATE)
