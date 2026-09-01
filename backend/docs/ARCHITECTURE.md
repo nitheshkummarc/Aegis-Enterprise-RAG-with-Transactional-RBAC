@@ -66,14 +66,55 @@ PyMuPDF's plain `page.get_text()` reads a table cell-by-cell, left-to-right and 
 *   **Detection**: Each page is also passed through PyMuPDF's `find_tables()`, and any detected table is additionally rendered as a markdown table appended to that page's text.
 *   **Why it matters**: Chunking and embedding now have a coherent, row-labeled version of every detected table to work with, not just the scrambled prose version. Table detection is best-effort and wrapped so a page it misjudges never breaks plain text extraction for that page.
 
-## 5. Langfuse Observability
+## 5. Generation Layer: LangChain over Groq
 
-Aegis integrates Langfuse to monitor the RAG pipeline's behavior in production.
+Generation runs through LangChain's `ChatGroq`, selected by the `GROQ_MODEL` setting and resolved once per process. The layer is deliberately thin — it receives a finished prompt string and returns text.
 
-*   **Nested Spans**: The `/query` endpoint wraps the request in a parent trace, with child spans explicitly demarcating the `retrieval` phase (database execution) and the `generation` phase (LLM streaming).
-*   **Why it matters**: When auditing a permission denial, administrators can inspect the Langfuse trace to prove that the database returned an empty array during the `retrieval` span, confirming the system behaved correctly and the LLM was never exposed to the restricted text.
+*   **LangChain wraps generation only, never retrieval.** The idiomatic LangChain RAG pattern is `create_retrieval_chain(retriever, doc_chain)` over a `VectorStore.as_retriever(search_kwargs={"filter": ...})`. Aegis does not use it. That pattern would move the role filter out of the SQL `WHERE` clause and into a framework kwarg — authorization enforced by library configuration rather than by the database. Retrieval stays hand-written SQL (§1); LangChain is handed the result.
+*   **The generation layer is authorization-blind by construction.** `generate_streaming()` takes a `str` and yields dicts. It holds no database session, no `User`, no role, and no retriever. Every access decision has already been made before the prompt string exists, which is what keeps the boundary in §1 the *only* boundary.
+*   **The prompt is not a `ChatPromptTemplate`.** `build_prompt()` substitutes `{context}` and `{question}` in a single regex pass, specifically so a retrieved chunk containing the literal text `{question}` cannot be overwritten by the live question, and so user input containing braces cannot raise or leak variable names. `ChatPromptTemplate.from_template()` re-parses `{...}` placeholders and would reintroduce exactly that bug, so the rendered string is passed through untouched.
+*   **Sent as a single user message.** The strict instructions are delivered as a `HumanMessage`, matching the original implementation's framing. Promoting them to a `SystemMessage` would be a behavior change, not a cleanup — it alters instruction-following and would invalidate any previously measured refusal rate.
+*   **Reasoning tokens are suppressed.** `openai/gpt-oss-120b` is a reasoning model and will stream its reasoning trace alongside the answer. The client sets `reasoning_format="hidden"`, and the accumulation loop reads `chunk.text` rather than `chunk.content` so structured reasoning blocks are excluded even if the output format changes. Leaked reasoning text would enter the SSE stream and corrupt the harness's exact refusal-string check (see [METHODOLOGY.md](METHODOLOGY.md)).
 
-### Known Trade-off: HNSW Approximate Recall vs. Exact Search
+### The SSE event contract
+
+`generate_streaming()` yields a fixed shape that both the streaming route and the evaluation harness depend on:
+
+```python
+{"type": "token", "text": "..."}                    # zero or more
+{"type": "done",  "full_response": str,
+                  "usage": {"prompt_tokens", "completion_tokens", "total_tokens"},
+                  "model": str}                     # exactly one, always last
+```
+
+Groq reports token usage only on the final streamed chunk, and sometimes omits it entirely, so `usage` degrades to `{}` rather than failing — an absent counter is not a generation failure. The `done` event is what carries the `sources` array to the frontend, so it is emitted even for an empty stream.
+
+## 6. Langfuse Observability
+
+Aegis integrates Langfuse to monitor the RAG pipeline's behavior in production. The integration targets the **v4 SDK**, which is OpenTelemetry-based.
+
+*   **Nested Spans**: `/query` opens a root `rag-query` observation carrying the user's email and role, with `1. Permission-Filtered Retrieval` (a `RETRIEVER` observation) and `2. LLM Generation` beneath it. The generation span is entered as the *current* OTEL context, so Langfuse's LangChain callback nests its own `GENERATION` observation inside it — reporting model, prompt, completion and token usage without hand-written instrumentation.
+*   **Retrieval is instrumented by hand; generation is not.** A raw pgvector query is not a LangChain operation and no callback can observe it, so its span is created explicitly. It is also the span that documents the authorization boundary, recording the role and the resolved numeric role level used in the `WHERE` clause.
+*   **The root span outlives the request handler.** The SSE body is produced by a generator that runs *after* the handler returns, potentially on a different worker thread. The root span is therefore created with the non-context-manager API and ended in the generator's `finally` block; holding an OpenTelemetry context open across that boundary risks detaching it from the wrong thread.
+*   **No per-request flush.** The v4 client batches on a background interval and flushes through an `atexit` hook. A blocking flush per request would stall the response for no benefit.
+*   **Why it matters**: When auditing a permission denial, an administrator can inspect the trace to prove the database returned zero rows during the retrieval span, confirming the LLM was never exposed to the restricted text.
+
+### A note on how this section used to be wrong
+
+An earlier version of this document described these spans as working. They were not. The route called `langfuse.trace(...)` — an API removed in Langfuse v3 — against an installed v4 SDK. The resulting `AttributeError` was caught by a bare `except Exception` that logged a warning and disabled tracing, so **every span in the query path was silently skipped**, and the only symptom was an empty dashboard.
+
+Two things changed as a result. The client is now validated against the v4 API surface at construction and raises `ConfigurationError` if it does not match, so the next SDK break is a startup failure rather than months of missing data. And the dependency floor moved from `langfuse>=2.0.0` — which resolved happily to a v4 this code could not use — to `langfuse>=3.0.0`. The general lesson is recorded in [ENGINEERING_DECISIONS.md](ENGINEERING_DECISIONS.md): a `try/except` around optional setup converts a loud failure into a silent one, and optional features are precisely the ones nobody notices are missing.
+
+## 7. Known Trade-off: HNSW Approximate Recall vs. Exact Search
 Aegis uses the HNSW (Hierarchical Navigable Small World) index for sub-millisecond vector retrieval. HNSW is an Approximate Nearest Neighbor (ANN) algorithm. In edge cases where a permitted chunk is located in a distant graph cluster, HNSW might occasionally miss it compared to a brute-force sequential scan.
 - **Mitigation:** For this project's scale (<10k chunks), HNSW provides >99% recall with a fraction of the latency. `ivfflat` would *not* fix this if 100% exact recall were a strict compliance requirement — it's also an approximate algorithm; its recall depends on the `probes` parameter and only approaches 100% as `probes` approaches "every list," which degenerates into a full scan anyway. The only way to guarantee exact recall is to drop the ANN index for that query and run a sequential scan, accepting the latency cost directly rather than trading it for a different approximation.
+
+---
+
+## Related documents
+
+*   [METHODOLOGY.md](METHODOLOGY.md) — how the system is built, and how each claim in this document is verified rather than asserted.
+*   [ENGINEERING_DECISIONS.md](ENGINEERING_DECISIONS.md) — the decisions behind this architecture, the alternatives rejected, and what each choice costs.
+*   [EVAL_RESULTS.md](EVAL_RESULTS.md) — measured evaluation output.
+*   [DEMO_SCRIPT.md](DEMO_SCRIPT.md) — a walkthrough demonstrating the RBAC boundary end to end.
 

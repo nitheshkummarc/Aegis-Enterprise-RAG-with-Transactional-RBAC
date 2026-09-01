@@ -47,8 +47,9 @@ LIMIT 3;
 | **Database** | PostgreSQL 16 + `pgvector` | Keeps relational metadata and vector embeddings in one transactional boundary. |
 | **Vector Index** | HNSW (`vector_cosine_ops`), one cumulative partial index per role level | Sub-millisecond retrieval latency; the per-role split keeps a viewer's search from ever ANN-scanning admin-only chunks. |
 | **Async Queue** | Celery + Redis | Decouples heavy PDF parsing/embedding from the HTTP request lifecycle. |
-| **LLM** | OpenAI (`gpt-4o-mini`, `text-embedding-3-small`) | Optimized for low latency and high instruction-following. |
-| **Observability** | Langfuse (Cloud) | End-to-end tracing of retrieval latency, token costs, and RBAC enforcement. |
+| **Generation** | LangChain `ChatGroq` → Groq (`openai/gpt-oss-120b`, or `qwen/qwen3.6-27b`) | The model is a config value (`GROQ_MODEL`), not a hardcoded SDK call, so swapping candidates is a restart rather than a code change. LangChain wraps **generation only** — never retrieval, which would move authorization out of SQL. |
+| **Embeddings** | OpenAI `text-embedding-3-small` | 1536-dim geometry matches the `vector_cosine_ops` HNSW indexes. Unchanged by the Groq migration — the system uses two providers. |
+| **Observability** | Langfuse (Cloud, v4 SDK) | End-to-end tracing of retrieval latency, token costs, and RBAC enforcement. The generation span is reported by LangChain's callback; retrieval is instrumented by hand. |
 
 ---
 
@@ -59,7 +60,8 @@ LIMIT 3;
 - **⚡ Async Ingestion Pipeline:** Celery workers with isolated DB sessions handle table-aware PyMuPDF extraction (detected tables are rendered as markdown so rows/columns survive parsing) and OpenAI embedding — transient storage failures retry automatically, while corrupt PDFs and extraction errors fail fast with no retry. A periodic cleanup task dead-letters any document orphaned mid-upload.
 - **📊 Adversarial Evaluation Harness:** Runs the golden dataset through the real `/retrieval/query` endpoint — real embeddings, real pgvector search, real LLM generation — including SQL injection payloads, malformed JWTs, and privilege escalation attempts, scored against the model's actual output rather than the retrieved chunks alone.
 - **📈 Hard Performance Metrics:** Instrumented to measure and report p95 database retrieval latency for the permission-filtered query.
-- **👁️ End-to-End Observability:** Langfuse integration traces every query, separating DB retrieval time from LLM generation latency.
+- **👁️ End-to-End Observability:** Langfuse (v4) traces every query — a root span carrying user and role, a hand-instrumented retrieval span recording the role level used in the `WHERE` clause, and a generation span reported by LangChain's own callback.
+- **🔁 Swappable Generation:** Generation runs through LangChain `ChatGroq` behind a single `GROQ_MODEL` setting, so evaluating a different model is a restart rather than a code change — while retrieval stays hand-written SQL, keeping authorization out of framework configuration.
 
 ---
 
@@ -67,8 +69,13 @@ LIMIT 3;
 
 ### Prerequisites
 - Docker & Docker Compose
-- An OpenAI API Key
+- **A Groq API key** — generation (`GROQ_API_KEY`, free tier)
+- **An OpenAI API key** — embeddings only (`OPENAI_API_KEY`)
 - (Optional) Langfuse Cloud keys for observability
+
+> Both keys are required: the Groq migration moved generation only. Embeddings
+> still run on `text-embedding-3-small`, whose 1536-dimension output is baked
+> into the schema and the HNSW indexes.
 
 ### 1. Clone and Configure
 ```bash
@@ -113,7 +120,14 @@ Navigate to [http://localhost:3000](http://localhost:3000). Login with one of th
 
 Aegis is tested against a synthetic corpus with strict cross-contamination checks, using [`eval/run_eval.py`](backend/eval/run_eval.py) — which runs every golden-dataset question through the real `/retrieval/query` endpoint (real embeddings, real pgvector search, real LLM generation) and scores permission compliance and faithfulness against the model's actual output.
 
-> **Note:** The harness was recently rewritten to score against real end-to-end output instead of a keyword-matching approximation. Run `python -m eval.run_eval` to regenerate current numbers — see [`docs/EVAL_RESULTS.md`](backend/docs/EVAL_RESULTS.md) for the latest report and methodology.
+The dataset holds **25 questions — 11 boundary cases and 3 adversarial** (forged JWTs, privilege escalation), so a clean run reports out of 25 and 11.
+
+The two metrics measure different things, and the distinction matters:
+
+- **Permission compliance** is scored from `min_role_level` on a direct SQL call, making it structurally independent of the LLM. No model swap can move it. This is the metric that speaks to the security thesis.
+- **Faithfulness** is scored against the model's actual generated text — for refusal cases, the exact string `"I do not have access to that information."` A chunk-level check could not tell *"correctly refused"* apart from *"ignored its instructions and answered from parametric knowledge."*
+
+> **⚠️ Current status: no baseline exists.** Generation recently migrated from OpenAI `gpt-4o-mini` to Groq, and a model swap invalidates every generation-dependent metric — nothing carries across it. Figures of "22/22" and "8/8" have circulated for this project; neither was ever produced by the current harness, and neither is arithmetically possible against it. See [`docs/EVAL_RESULTS.md`](backend/docs/EVAL_RESULTS.md) for what is actually measured, what is blocked, and how to regenerate it.
 
 ---
 
@@ -123,7 +137,12 @@ To maintain architectural purity and focus on the Transactional RBAC thesis, spe
 
 1. **HNSW Approximate Recall vs. Exact Search:** Aegis uses the HNSW index for sub-millisecond latency. HNSW is an Approximate Nearest Neighbor (ANN) algorithm. In edge cases, it might occasionally miss a permitted chunk compared to a brute-force sequential scan. *Mitigation: For <10k chunks, HNSW provides >99% recall. `ivfflat` is also approximate (recall depends on its `probes` parameter and is never exactly 100%) — the only way to guarantee 100% exact recall is to drop the ANN index and run a sequential scan, accepting the latency cost that comes with it.*
 2. **No Standalone Vector DB:** We intentionally avoid Pinecone/Qdrant to keep relational metadata (RBAC constraints) tightly coupled with vector embeddings in PostgreSQL, so the permission filter and the ANN search can be one query instead of two systems to keep in sync.
-3. **No Multi-Agent Orchestration:** The pipeline is linear and deterministic. Routing logic is written in pure FastAPI to keep the execution path transparent and easily auditable.
+3. **No Multi-Agent Orchestration:** The pipeline is linear and deterministic — `embed → permission-filtered search → generate`. Adopting LangChain for generation did **not** introduce chains, agents, routers or tool calling: every branch in an authorization-sensitive path is a branch that has to be audited. *Cost: no query rewriting, no multi-hop retrieval, no self-correction.*
+4. **LangChain Wraps Generation Only:** The idiomatic LangChain RAG pattern (`create_retrieval_chain` over a filtered `as_retriever`) is deliberately rejected, because it would express the role filter as a framework kwarg — moving authorization out of the database and one refactor away from not being applied. *Cost: Aegis forgoes LangChain's retrieval ecosystem and hand-writes what it needs.*
+5. **Ordered Clearance Levels Only:** `min_role_level` assumes a totally ordered model. Genuinely orthogonal roles — "Finance" and "Engineering" as peers rather than levels — do not fit an integer comparison and would require a real change, not a bigger number.
+6. **Two LLM Providers:** Generation is on Groq, embeddings remain on OpenAI. This is an accepted operational cost of not re-embedding the corpus.
+
+**Full reasoning, rejected alternatives, and the cost of each decision are recorded in [`docs/ENGINEERING_DECISIONS.md`](backend/docs/ENGINEERING_DECISIONS.md).**
 
 ---
 
@@ -134,11 +153,12 @@ Aegis/
 ├── backend/
 │   ├── app/
 │   │   ├── auth/           # JWT generation, Pydantic validation, RBAC dependencies
+│   │   ├── core/           # Exceptions, rate limiter, Langfuse wiring (observability.py)
 │   │   ├── db/              # SQLAlchemy models, migrations (Alembic + schema.sql)
 │   │   ├── documents/      # Presigned upload, document CRUD
 │   │   ├── ingestion/      # Celery worker, PyMuPDF parser, chunker, embedder
-│   │   └── retrieval/      # Permission-filtered pgvector search, SSE streaming
-│   ├── docs/               # ARCHITECTURE.md, DEMO_SCRIPT.md, EVAL_RESULTS.md
+│   │   └── retrieval/      # Permission-filtered pgvector search, LangChain/Groq generation, SSE
+│   ├── docs/               # See "Documentation" below
 │   ├── eval/               # Golden dataset, adversarial stress tests, run_eval.py
 │   ├── scripts/            # Synthetic corpus generator with cross-contamination checks
 │   └── tests/              # Unit, Integration, and Security (RBAC) test suites
@@ -146,3 +166,21 @@ Aegis/
 ├── .github/workflows/      # CI: backend test suite against real Postgres + Redis
 └── docker-compose.yml      # Postgres (pgvector), Redis, Backend, Celery Worker
 ```
+
+---
+
+## 📚 Documentation
+
+All project documentation lives in [`backend/docs/`](backend/docs/).
+
+| Document | What it answers |
+| :--- | :--- |
+| [**ARCHITECTURE.md**](backend/docs/ARCHITECTURE.md) | **What the system is.** Single-query RBAC enforcement with a verified `EXPLAIN` plan, per-role partial HNSW indexes, the LangChain/Groq generation layer, and the Langfuse v4 span structure. |
+| [**METHODOLOGY.md**](backend/docs/METHODOLOGY.md) | **How it is built and verified.** Why the corpus is synthetic, where the authorization boundary is tested, what each evaluation metric can and cannot prove, and the rules for reporting numbers. |
+| [**ENGINEERING_DECISIONS.md**](backend/docs/ENGINEERING_DECISIONS.md) | **Why it is shaped this way.** Thirteen decisions with their rejected alternatives and — for each — what the choice actually costs. Plus the open questions that are not yet settled. |
+| [**EVAL_RESULTS.md**](backend/docs/EVAL_RESULTS.md) | **What was measured.** Regenerated on every `run_eval.py` run; records which model produced each result. |
+| [**DEMO_SCRIPT.md**](backend/docs/DEMO_SCRIPT.md) | A walkthrough demonstrating the RBAC boundary end to end. |
+
+These are written to be honest about limits rather than promotional: the
+architecture doc includes a section on how it used to be wrong, and the
+decisions doc states the cost of every choice.
