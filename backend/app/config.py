@@ -18,8 +18,19 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
     
-    # OpenAI
+    # OpenAI — embeddings ONLY (text-embedding-3-small). Generation runs on
+    # Groq via LangChain; nothing in the generation path imports the OpenAI SDK.
     OPENAI_API_KEY: str = ""
+
+    # Groq (generation). GROQ_MODEL selects which model the whole process
+    # serves. It is resolved once at startup through the lru_cached
+    # get_settings(), so switching models means restarting the process —
+    # which is fine: the eval harness runs as a fresh process per invocation.
+    # Re-verify the ID against Groq's live catalog before relying on it.
+    # That catalog churns, and llama-3.3-70b-versatile was already retired
+    # from the free tier out from under this project once.
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
+    GROQ_API_KEY: str = ""
     
     # JWT
     JWT_SECRET_KEY: str = "change-me-to-a-random-secret"
@@ -67,7 +78,11 @@ class Settings(BaseSettings):
                 )
             if not self.OPENAI_API_KEY:
                 raise ValueError(
-                    "OPENAI_API_KEY must be set in production."
+                    "OPENAI_API_KEY must be set in production (embeddings)."
+                )
+            if not self.GROQ_API_KEY:
+                raise ValueError(
+                    "GROQ_API_KEY must be set in production (generation)."
                 )
         return self
 

@@ -25,11 +25,22 @@ redis>=5.0.0
 # PDF parsing (Phase 2)
 PyMuPDF>=1.24.0
 
-# OpenAI (Phase 2+)
+# OpenAI — embeddings ONLY (text-embedding-3-small). Generation moved to
+# Groq via LangChain; nothing in the generation path imports this SDK.
 openai>=1.30.0
 
-# Observability (Phase 3)
-langfuse>=2.0.0
+# Generation (LangChain + Groq)
+langchain-core>=0.3.0
+langchain-groq>=0.2.0
+# Required by langfuse.langchain.CallbackHandler, which imports the
+# `langchain` meta-package purely to branch on langchain.__version__
+# before importing everything else from langchain-core.
+langchain>=1.0.0
+
+# Observability (Phase 3). Floor raised to 3.0: the v2 `langfuse.trace()`
+# API this code used was removed in v3, and the mismatch silently
+# disabled every span in the query path.
+langfuse>=3.0.0
 
 # Testing
 pytest>=8.0.0
