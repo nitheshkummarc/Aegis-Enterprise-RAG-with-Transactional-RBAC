@@ -47,8 +47,8 @@ LIMIT 3;
 | **Database** | PostgreSQL 16 + `pgvector` | Keeps relational metadata and vector embeddings in one transactional boundary. |
 | **Vector Index** | HNSW (`vector_cosine_ops`), one cumulative partial index per role level | Sub-millisecond retrieval latency; the per-role split keeps a viewer's search from ever ANN-scanning admin-only chunks. |
 | **Async Queue** | Celery + Redis | Decouples heavy PDF parsing/embedding from the HTTP request lifecycle. |
-| **Generation** | LangChain `ChatGroq` → Groq (`openai/gpt-oss-120b`, or `qwen/qwen3.6-27b`) | The model is a config value (`GROQ_MODEL`), not a hardcoded SDK call, so swapping candidates is a restart rather than a code change. LangChain wraps **generation only** — never retrieval, which would move authorization out of SQL. |
-| **Embeddings** | OpenAI `text-embedding-3-small` (1536-dim) | Groq serves no embedding model, so embeddings stay on OpenAI. Model ID and vector width are set by `EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS`. |
+| **Generation** | LangChain `ChatGroq` → Groq (`openai/gpt-oss-120b` or `qwen/qwen3.6-27b`) | Selected by `GROQ_MODEL`, with no default in code, so changing model is a restart rather than a code change. LangChain wraps generation only, never retrieval, which would move authorization out of SQL. |
+| **Embeddings** | OpenAI `text-embedding-3-small` (1536-dim) | Groq serves no embedding model, so embeddings run on OpenAI. Set by `EMBEDDING_MODEL` and `EMBEDDING_DIMENSIONS`, which must match the pgvector column width. |
 | **Observability** | Langfuse (Cloud, v4 SDK) | End-to-end tracing of retrieval latency, token costs, and RBAC enforcement. The generation span is reported by LangChain's callback; retrieval is instrumented by hand. |
 
 ---
@@ -61,7 +61,7 @@ LIMIT 3;
 - **📊 Adversarial Evaluation Harness:** Runs the golden dataset through the real `/retrieval/query` endpoint — real embeddings, real pgvector search, real LLM generation — including SQL injection payloads, malformed JWTs, and privilege escalation attempts, scored against the model's actual output rather than the retrieved chunks alone.
 - **📈 Hard Performance Metrics:** Instrumented to measure and report p95 database retrieval latency for the permission-filtered query.
 - **👁️ End-to-End Observability:** Langfuse (v4) traces every query — a root span carrying user and role, a hand-instrumented retrieval span recording the role level used in the `WHERE` clause, and a generation span reported by LangChain's own callback.
-- **🔁 Swappable Generation:** Generation runs through LangChain `ChatGroq` behind a single `GROQ_MODEL` setting, so evaluating a different model is a restart rather than a code change — while retrieval stays hand-written SQL, keeping authorization out of framework configuration.
+- **🔁 Configurable Generation:** Generation runs through LangChain `ChatGroq`, selected by `GROQ_MODEL`. No model identifier is defaulted in code, so the model in use is always explicit. Retrieval remains hand-written SQL, keeping authorization out of framework configuration.
 
 ---
 
@@ -73,11 +73,10 @@ LIMIT 3;
 - **An OpenAI API key** (`OPENAI_API_KEY`) — embeddings; the project must have `text-embedding-3-small` enabled under Project → Limits → Model access
 - (Optional) Langfuse Cloud keys for observability
 
-> **Before first seeding**, confirm the embedding width matches the schema:
-> `python -m scripts.verify_embedding_dimensions`. It measures the model's real
-> output and tells you what to change if `EMBEDDING_DIMENSIONS` in
-> `app/config.py` disagrees — the pgvector column width is not negotiable at
-> insert time.
+> The OpenAI project must have `text-embedding-3-small` enabled under
+> **Settings → Limits → Model access**, and a non-zero credit balance;
+> embeddings have no free tier. Before first seeding, confirm the vector width
+> matches the schema with `python -m scripts.verify_embedding_dimensions`.
 
 ### 1. Clone and Configure
 ```bash
@@ -129,7 +128,13 @@ The two metrics measure different things, and the distinction matters:
 - **Permission compliance** is scored from `min_role_level` on a direct SQL call, making it structurally independent of the LLM. No model swap can move it. This is the metric that speaks to the security thesis.
 - **Faithfulness** is scored against the model's actual generated text — for refusal cases, the exact string `"I do not have access to that information."` A chunk-level check could not tell *"correctly refused"* apart from *"ignored its instructions and answered from parametric knowledge."*
 
-> **⚠️ Current status: no baseline exists.** Generation recently migrated from OpenAI `gpt-4o-mini` to Groq, and a model swap invalidates every generation-dependent metric — nothing carries across it. Figures of "22/22" and "8/8" have circulated for this project; neither was ever produced by the current harness, and neither is arithmetically possible against it. See [`docs/EVAL_RESULTS.md`](backend/docs/EVAL_RESULTS.md) for what is actually measured, what is blocked, and how to regenerate it.
+> **Current status: not yet run.** Generation moved from OpenAI `gpt-4o-mini` to Groq, and a model change invalidates every generation-dependent metric, so no earlier figure applies. The harness is currently blocked: `text-embedding-3-small` returns HTTP 403 for the configured OpenAI project, and every question requires a query embedding.
+>
+> Figures of 22/22 and 8/8 have circulated for this project. Neither was produced by the current harness, and neither is possible against it, since the dataset holds 25 questions and 11 boundary cases. See [`docs/EVAL_RESULTS.md`](backend/docs/EVAL_RESULTS.md) for the full status and the commands to produce results.
+
+Verified working while evaluation is blocked: PostgreSQL 17.6 with pgvector 0.8.2, Langfuse v4 tracing end to end, and both Groq chat models answering from context and emitting the exact refusal string.
+
+The test suite passes 105/105 when the database is reachable. `test_rbac_end_to_end.py` connects to the configured PostgreSQL instance and fails with a connection timeout when it is not; the remaining 104 tests do not require network access.
 
 ---
 

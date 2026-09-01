@@ -1,18 +1,13 @@
 # Aegis Methodology
 
-[ARCHITECTURE.md](ARCHITECTURE.md) describes *what* the system is.
-[ENGINEERING_DECISIONS.md](ENGINEERING_DECISIONS.md) describes *why* it is
-shaped that way. This document describes **how it is built and how its claims
-are checked** — the working practices that decide whether a statement in this
-repository is an assertion or a measurement.
-
-The organising principle is simple and is applied throughout: **a security
-claim that has not been measured is not a claim, it is a hope.** Most of what
-follows is machinery for telling those two apart.
+[ARCHITECTURE.md](ARCHITECTURE.md) describes the system.
+[ENGINEERING_DECISIONS.md](ENGINEERING_DECISIONS.md) records the decisions
+behind it. This document describes how the system is built and how its claims
+are verified.
 
 ---
 
-## 1. The corpus is synthetic, and deliberately so
+## 1. The corpus is synthetic
 
 Evaluating an RBAC system requires knowing the ground truth of who may see
 what. Real documents do not come with that label, and mislabeling even one of
@@ -25,11 +20,10 @@ each chunked and embedded through the same `app.ingestion.chunker` and
 end-to-end over the real pipeline; only the *authorship* of the documents is
 synthetic.
 
-**Cross-contamination checks matter more than volume here.** A corpus where
-admin-tier facts also appear in viewer-tier documents cannot detect a
-permission leak — the leaked answer would be independently reachable, and
-every test would pass for the wrong reason. Distinctive, tier-exclusive facts
-are what give the refusal cases their meaning.
+Cross-contamination checks matter more than corpus size. If admin-tier facts
+also appear in viewer-tier documents, a permission leak cannot be detected,
+because the leaked answer would be reachable through permitted content. The
+refusal cases depend on facts being exclusive to their tier.
 
 ---
 
@@ -46,24 +40,16 @@ rather than testing a convenient proxy for it.
 | Integration (real Postgres) | An actual database returns zero admin chunks to a viewer | `tests/integration/test_rbac_end_to_end.py` |
 | Evaluation | The full pipeline, per question, per role | `eval/run_eval.py` |
 
-The integration test is the important one, and it is deliberately not mocked.
-A mocked database can only confirm that the application sends the SQL it was
-written to send; it cannot confirm that PostgreSQL, pgvector and the chosen
-index actually honour the predicate. That is a different claim and needs a
-real engine to test.
+The integration test runs against a real database rather than a mock. A mocked
+database confirms only that the application sends the intended SQL; it cannot
+confirm that PostgreSQL, pgvector, and the selected index honour the predicate.
 
-The same reasoning produced the `EXPLAIN (ANALYZE, BUFFERS)` verification
-recorded in [ARCHITECTURE.md](ARCHITECTURE.md#verified-query-plan). "The
-filter and the ANN search are one query" is a statement about a *query plan*,
-not about SQL text, and whether the planner selects the matching partial index
-for a **bound parameter** rather than a literal is a genuine open question. It
-was checked against a live instance instead of reasoned about.
-
-That section also demonstrates the second half of the practice: the same
-verification produced execution times of 1561ms, 1797ms and 7ms, which look
-like a dramatic performance result and are in fact a cache-warming artifact.
-The `Buffers` output says so plainly. Reporting the timings as a speedup would
-have been the more impressive and less honest choice.
+The `EXPLAIN (ANALYZE, BUFFERS)` verification in
+[ARCHITECTURE.md](ARCHITECTURE.md#verified-query-plan) follows the same
+principle: index selection for a bound parameter is a property of the query
+plan, not of the SQL text, so it was measured against a live instance. The
+execution times from that run are a cache-warming artifact and are documented
+as such rather than reported as a performance result.
 
 ---
 
@@ -71,8 +57,8 @@ have been the more impressive and less honest choice.
 
 `eval/run_eval.py` runs every question in `eval/golden_dataset.json` through
 the real `/retrieval/query` endpoint using real JWTs minted by the backend's
-own `create_access_token`. Nothing in the path is mocked: real embedding, real
-pgvector search, real Groq generation, real SSE stream.
+own `create_access_token`. Nothing in the path is mocked: OpenAI embedding,
+pgvector search, Groq generation, and the SSE stream all run for real.
 
 ### Dataset composition
 
@@ -80,9 +66,6 @@ pgvector search, real Groq generation, real SSE stream.
 Those denominators are the ones any honest report uses.
 
 ### The two metrics measure different things
-
-This distinction is the core of the methodology, and conflating the two is the
-most common way an RBAC evaluation flatters itself.
 
 **Permission compliance** is scored from the `min_role_level` of the chunks
 returned by a direct call to `permission_filtered_search`. It asks one
@@ -96,11 +79,10 @@ the authorization boundary itself regressed.
 recovered by reassembling the SSE token stream. For the 11 refusal cases it
 checks for the exact string `"I do not have access to that information."`
 
-The reason faithfulness is scored on generated text rather than on retrieved
-chunks is worth stating explicitly: a chunk-level check cannot distinguish
-*"the model correctly refused"* from *"the model ignored its instructions and
-answered from parametric knowledge anyway."* Both produce zero retrieved
-chunks. Only the generated text separates them.
+Faithfulness is scored on generated text rather than retrieved chunks because
+a chunk-level check cannot distinguish a correct refusal from a model that
+ignored its instructions and answered from prior knowledge. Both produce zero
+retrieved chunks; only the generated text distinguishes them.
 
 ### What each metric cannot tell you
 
@@ -133,8 +115,6 @@ tail that actually matters.
 
 ## 4. Rules for reporting numbers
 
-These exist because this project has already been burned by their absence.
-
 1.  **A model swap invalidates every generation-dependent metric.** Numbers do
     not carry across a model change, and re-measuring is not optional. This is
     why the Groq migration required a full re-run rather than an assumption of
@@ -162,45 +142,38 @@ These exist because this project has already been burned by their absence.
 
 ---
 
-## 5. How a dependency migration is verified
+## 5. Verifying a provider migration
 
-The migration from a direct OpenAI call to LangChain/Groq followed a sequence
-worth recording, because the mapping step is what caught the real problems.
+The migration from OpenAI generation to LangChain/Groq followed this sequence.
 
-**Map before touching.** The current flow was traced end to end first — where
-generation happens, what the prompt template is, how the eval harness hooks in,
-and where the authorization boundary sits. That step surfaced two findings that
-changed the scope of the work, both of which would have been missed by starting
-with the edit.
+**Map the existing flow first.** Where generation happens, what the prompt
+template contains, how the evaluation harness connects, and where the
+authorization boundary sits were established before any edit. This identified
+two problems that changed the scope of the work.
 
-**Verify the environment's claims, don't inherit them.** Langfuse was described
-as "already wired in." Inspecting the installed SDK showed the code calling a
-v2 API against a v4 package, with the resulting `AttributeError` swallowed by a
-bare `except`. Tracing had been dead for months. The check that found it was
-one command against the installed package, not a code review.
+**Check the installed packages rather than the documentation.** Langfuse was
+recorded as working. Inspecting the installed SDK showed the code calling a v2
+API against a v4 package, with the resulting `AttributeError` caught by a broad
+`except`, so no spans were recorded.
 
-**Confirm external facts against the source.** Both target model IDs were
-verified against Groq's live catalog before implementation, which is also how
-`openai/gpt-oss-120b` (production) and `qwen/qwen3.6-27b` (preview, and
-explicitly "for evaluation only") were distinguished — a difference that
-belongs in a default-model decision. An earlier candidate for this migration,
-`llama-3.3-70b-versatile`, had already been retired from the free tier.
+**Confirm external facts against the provider.** Model identifiers were checked
+against Groq's live catalogue. This distinguished `openai/gpt-oss-120b`
+(production) from `qwen/qwen3.6-27b` (preview), and established that Groq
+serves no embedding model, which determined that embeddings stay on OpenAI. An
+earlier candidate, `llama-3.3-70b-versatile`, had already been retired.
 
-**Establish the contract, then hold it.** `generate_streaming`'s yielded shape
-is depended on by five integration tests and by the eval harness. It was
-written down explicitly before the rewrite and verified afterwards by running
-the suite with **zero test files modified** — the strongest available evidence
-that the swap was behaviour-preserving.
+**Define the interface contract before changing the implementation.**
+`generate_streaming`'s yielded shape is used by five integration tests and by
+the evaluation harness. It was recorded before the rewrite and confirmed
+afterwards by running the suite unchanged.
 
-**Test the parts that have no other guard.** Streaming accumulation, usage
-parsing and reasoning-token exclusion were exercised against hand-built chunks,
-so a failure in any of them points at one function rather than at a request
-handler.
+**Cover the parts with no other test.** Streaming accumulation, usage parsing,
+and reasoning-token exclusion are tested against constructed chunks, so a
+failure identifies one function.
 
-**Prove the observability, don't assume it.** The Langfuse fix was confirmed by
-driving the real span chain and then *fetching the trace back from the API* to
-confirm it carried the expected user, role and nested generation observation.
-"The code now calls the right API" and "the data arrives" are different claims.
+**Confirm observability end to end.** The Langfuse fix was verified by running
+the span chain and reading the trace back from the API, confirming it carried
+the expected user, role, and nested generation observation.
 
 ---
 
@@ -208,9 +181,9 @@ confirm it carried the expected user, role and nested generation observation.
 
 Stated because a methodology document that lists only strengths is marketing.
 
-*   **No baseline exists yet for the Groq generation layer.** The runs are
-    blocked on a `GROQ_API_KEY` and on a reachable seeded database. See
-    [EVAL_RESULTS.md](EVAL_RESULTS.md).
+*   **No baseline exists yet.** Evaluation is blocked because
+    `text-embedding-3-small` returns HTTP 403 for the configured OpenAI
+    project. See [EVAL_RESULTS.md](EVAL_RESULTS.md).
 *   **The corpus is small** (10 documents). It is sized to make permission
     boundaries unambiguous, not to characterise retrieval quality at scale.
 *   **Faithfulness scoring is keyword-based** for non-refusal questions —
@@ -219,6 +192,8 @@ Stated because a methodology document that lists only strengths is marketing.
 *   **HNSW is approximate.** A permitted chunk in a distant graph cluster can
     be missed relative to a sequential scan. Discussed in
     [ARCHITECTURE.md](ARCHITECTURE.md) §7.
-*   **One integration test requires network reachability** to the configured
-    Postgres instance and fails in environments without it. It is a real test
-    of a real guarantee, and mocking it away would defeat its purpose.
+*   **One integration test requires network access** to the configured
+    PostgreSQL instance and fails without it. It verifies behaviour that a
+    mock cannot.
+*   **The system depends on two providers.** Generation runs on Groq and
+    embeddings on OpenAI, because Groq serves no embedding model.

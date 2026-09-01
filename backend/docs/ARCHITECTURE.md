@@ -19,11 +19,11 @@ Aegis solves this by enforcing Role-Based Access Control (RBAC) at the database 
     ORDER BY embedding <=> :query_embedding 
     LIMIT 3;
     ```
-*   **Why it matters**: The system only ever *retrieves* chunks the user is authorized to see — the WHERE clause is part of the same statement doing the ANN ordering, not a post-filter over already-fetched rows. If a viewer searches for admin-level content, the database returns 0 rows, so the LLM has nothing to leak. See [Verified query plan](#verified-query-plan) below for what the actual execution plan does with this, rather than assuming it from the SQL text alone.
+*   **Why it matters**: Only chunks the user is authorized to see are retrieved. The WHERE clause is part of the statement performing the ANN ordering, not a filter applied to already-fetched rows. A viewer querying admin-level content receives zero rows. See [Verified query plan](#verified-query-plan) for the measured execution plan.
 
 ### Verified query plan
 
-The claim above ("the filter and the ANN search are one query") is easy to write and easy to get wrong in practice — whether PostgreSQL's planner actually uses the matching partial index for a *bound parameter* (as opposed to a literal) is a real question, not a given. This was checked with `EXPLAIN (ANALYZE, BUFFERS)` against a live Postgres/pgvector 0.8.2 instance, using a throwaway 15,000-row dataset (5,000 chunks per role tier) inserted inside a transaction that was rolled back afterward — nothing was left in the database.
+Whether PostgreSQL's planner selects the matching partial index for a *bound parameter* rather than a literal is not evident from the SQL alone. It was checked with `EXPLAIN (ANALYZE, BUFFERS)` against a live Postgres/pgvector 0.8.2 instance, using a throwaway 15,000-row dataset (5,000 chunks per role tier) inserted inside a transaction that was rolled back afterward — nothing was left in the database.
 
 | Role level queried | Index chosen | Rows in that index |
 |---|---|---|
@@ -33,7 +33,7 @@ The claim above ("the filter and the ANN search are one query") is easy to write
 
 Each query's plan used an **Index Scan** on exactly the partial index whose predicate matches the bound `:user_role_level` value — confirming the planner re-plans per execution (seeing the actual parameter value) rather than reusing a generic cached plan that couldn't make this choice. A viewer's query never touches the manager- or admin-only index at all.
 
-**A caveat, so this section doesn't overclaim in the other direction**: the raw execution times from that same run (1561ms, 1797ms, then 7ms, in query order) are *not* a real latency comparison — they're a cache-warming artifact. The `Buffers` output makes this explicit:
+The execution times from that run (1561ms, 1797ms, then 7ms, in query order) are not a latency comparison. They reflect cache warming, as the `Buffers` output shows:
 
 | Role level | Buffer hits (cached) | Buffer reads (disk) |
 |---|---|---|
@@ -41,7 +41,7 @@ Each query's plan used an **Index Scan** on exactly the partial index whose pred
 | `<= 1` (ran 2nd) | 783 | 914 |
 | `<= 2` (ran 3rd) | 1386 | 4 |
 
-The data had just been bulk-inserted in the same transaction, so nothing was in `shared_buffers` yet. Each query's candidate set is a superset of the one before it, so by the third query almost every relevant page was already cached from the first two — hence 4 disk reads instead of ~1,500. This says nothing about whether HNSW partial indexes are fast in general; it only confirms the planner picks the right one. Real latency numbers need a warm cache and a realistic corpus size, not a just-populated table in one transaction.
+The data had just been bulk-inserted in the same transaction, so nothing was in `shared_buffers`. Each query's candidate set is a superset of the previous one, so by the third query most relevant pages were already cached. The measurement confirms index selection only; latency figures require a warm cache and a realistic corpus size.
 
 ## 2. HNSW Indexing for Cosine Distance
 
@@ -66,19 +66,43 @@ PyMuPDF's plain `page.get_text()` reads a table cell-by-cell, left-to-right and 
 *   **Detection**: Each page is also passed through PyMuPDF's `find_tables()`, and any detected table is additionally rendered as a markdown table appended to that page's text.
 *   **Why it matters**: Chunking and embedding now have a coherent, row-labeled version of every detected table to work with, not just the scrambled prose version. Table detection is best-effort and wrapped so a page it misjudges never breaks plain text extraction for that page.
 
-## 5. Generation Layer: LangChain over Groq
+## 5. Generation and Embedding Layers
 
-Generation runs through LangChain's `ChatGroq`, selected by the `GROQ_MODEL` setting and resolved once per process. The layer is deliberately thin — it receives a finished prompt string and returns text.
+Text generation runs through LangChain's `ChatGroq`, selected by `GROQ_MODEL`
+and resolved once per process. Embeddings run on OpenAI's
+`text-embedding-3-small`, selected by `EMBEDDING_MODEL`. The two providers are
+separate because Groq serves no embedding model: its live catalogue lists chat,
+speech, and safety models only.
 
-*   **LangChain wraps generation only, never retrieval.** The idiomatic LangChain RAG pattern is `create_retrieval_chain(retriever, doc_chain)` over a `VectorStore.as_retriever(search_kwargs={"filter": ...})`. Aegis does not use it. That pattern would move the role filter out of the SQL `WHERE` clause and into a framework kwarg — authorization enforced by library configuration rather than by the database. Retrieval stays hand-written SQL (§1); LangChain is handed the result.
-*   **The generation layer is authorization-blind by construction.** `generate_streaming()` takes a `str` and yields dicts. It holds no database session, no `User`, no role, and no retriever. Every access decision has already been made before the prompt string exists, which is what keeps the boundary in §1 the *only* boundary.
-*   **The prompt is not a `ChatPromptTemplate`.** `build_prompt()` substitutes `{context}` and `{question}` in a single regex pass, specifically so a retrieved chunk containing the literal text `{question}` cannot be overwritten by the live question, and so user input containing braces cannot raise or leak variable names. `ChatPromptTemplate.from_template()` re-parses `{...}` placeholders and would reintroduce exactly that bug, so the rendered string is passed through untouched.
-*   **Sent as a single user message.** The strict instructions are delivered as a `HumanMessage`, matching the original implementation's framing. Promoting them to a `SystemMessage` would be a behavior change, not a cleanup — it alters instruction-following and would invalidate any previously measured refusal rate.
-*   **Reasoning tokens are suppressed.** `openai/gpt-oss-120b` is a reasoning model and will stream its reasoning trace alongside the answer. The client sets `reasoning_format="hidden"`, and the accumulation loop reads `chunk.text` rather than `chunk.content` so structured reasoning blocks are excluded even if the output format changes. Leaked reasoning text would enter the SSE stream and corrupt the harness's exact refusal-string check (see [METHODOLOGY.md](METHODOLOGY.md)).
+No model identifier is defaulted in code. `GROQ_MODEL`, `EMBEDDING_MODEL`, and
+`EMBEDDING_DIMENSIONS` are read from the environment, and an unset value raises
+rather than falling back, so the model in use is always explicit.
+
+*   **LangChain wraps generation only, never retrieval.** The common LangChain
+    RAG pattern is `create_retrieval_chain` over a
+    `VectorStore.as_retriever(search_kwargs={"filter": ...})`. Aegis does not
+    use it, because that expresses the role filter as framework configuration
+    rather than as a SQL predicate. Retrieval remains the hand-written query in
+    §1.
+*   **The generation layer holds no authorization state.** `generate_streaming()`
+    takes a string and yields dicts. It has no database session, user, role, or
+    retriever, so it cannot make an access decision.
+*   **The prompt is not a `ChatPromptTemplate`.** `build_prompt()` substitutes
+    `{context}` and `{question}` in a single pass. `ChatPromptTemplate` re-parses
+    `{...}` placeholders, which would reintroduce the substitution problems that
+    function avoids.
+*   **The prompt is sent as one `HumanMessage`.** The instructions are authored
+    as user content; sending them as a system message would change model
+    behaviour and invalidate previously measured refusal rates.
+*   **Reasoning traces are suppressed.** `reasoning_format="hidden"` is set, and
+    the accumulation loop reads `chunk.text` rather than `chunk.content`, so
+    non-text blocks are excluded from the token stream under either LangChain
+    content format.
 
 ### The SSE event contract
 
-`generate_streaming()` yields a fixed shape that both the streaming route and the evaluation harness depend on:
+`generate_streaming()` yields a fixed shape used by both the streaming route
+and the evaluation harness:
 
 ```python
 {"type": "token", "text": "..."}                    # zero or more
@@ -87,7 +111,9 @@ Generation runs through LangChain's `ChatGroq`, selected by the `GROQ_MODEL` set
                   "model": str}                     # exactly one, always last
 ```
 
-Groq reports token usage only on the final streamed chunk, and sometimes omits it entirely, so `usage` degrades to `{}` rather than failing — an absent counter is not a generation failure. The `done` event is what carries the `sources` array to the frontend, so it is emitted even for an empty stream.
+Groq reports token usage only on the final chunk and may omit it, so `usage`
+falls back to `{}`. The done event carries the sources list to the frontend and
+is emitted even when the stream produced no tokens.
 
 ## 6. Langfuse Observability
 
@@ -97,13 +123,18 @@ Aegis integrates Langfuse to monitor the RAG pipeline's behavior in production. 
 *   **Retrieval is instrumented by hand; generation is not.** A raw pgvector query is not a LangChain operation and no callback can observe it, so its span is created explicitly. It is also the span that documents the authorization boundary, recording the role and the resolved numeric role level used in the `WHERE` clause.
 *   **The root span outlives the request handler.** The SSE body is produced by a generator that runs *after* the handler returns, potentially on a different worker thread. The root span is therefore created with the non-context-manager API and ended in the generator's `finally` block; holding an OpenTelemetry context open across that boundary risks detaching it from the wrong thread.
 *   **No per-request flush.** The v4 client batches on a background interval and flushes through an `atexit` hook. A blocking flush per request would stall the response for no benefit.
-*   **Why it matters**: When auditing a permission denial, an administrator can inspect the trace to prove the database returned zero rows during the retrieval span, confirming the LLM was never exposed to the restricted text.
+*   **Why it matters**: When auditing a permission denial, the trace shows that the database returned zero rows during the retrieval span, confirming the model did not receive the restricted text.
 
-### A note on how this section used to be wrong
+### SDK version requirement
 
-An earlier version of this document described these spans as working. They were not. The route called `langfuse.trace(...)` — an API removed in Langfuse v3 — against an installed v4 SDK. The resulting `AttributeError` was caught by a bare `except Exception` that logged a warning and disabled tracing, so **every span in the query path was silently skipped**, and the only symptom was an empty dashboard.
+The route previously called `langfuse.trace(...)`, an API removed in Langfuse
+v3. Against the installed v4 SDK this raised `AttributeError`, which was caught
+by a broad `except` that disabled tracing, so no spans were recorded.
 
-Two things changed as a result. The client is now validated against the v4 API surface at construction and raises `ConfigurationError` if it does not match, so the next SDK break is a startup failure rather than months of missing data. And the dependency floor moved from `langfuse>=2.0.0` — which resolved happily to a v4 this code could not use — to `langfuse>=3.0.0`. The general lesson is recorded in [ENGINEERING_DECISIONS.md](ENGINEERING_DECISIONS.md): a `try/except` around optional setup converts a loud failure into a silent one, and optional features are precisely the ones nobody notices are missing.
+The client is now validated against the v4 API surface at construction and
+raises `ConfigurationError` if it does not match. The dependency floor is
+`langfuse>=3.0.0`; the previous floor of `>=2.0.0` resolved to a v4 release the
+code could not use.
 
 ## 7. Known Trade-off: HNSW Approximate Recall vs. Exact Search
 Aegis uses the HNSW (Hierarchical Navigable Small World) index for sub-millisecond vector retrieval. HNSW is an Approximate Nearest Neighbor (ANN) algorithm. In edge cases where a permitted chunk is located in a distant graph cluster, HNSW might occasionally miss it compared to a brute-force sequential scan.
